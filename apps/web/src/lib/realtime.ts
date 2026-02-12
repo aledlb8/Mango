@@ -1,0 +1,65 @@
+import type { Message, MessageReactionSummary } from "./api"
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001"
+const WS_BASE =
+  process.env.NEXT_PUBLIC_WS_BASE_URL ?? API_BASE.replace(/^http:\/\//, "ws://").replace(/^https:\/\//, "wss://")
+
+export type RealtimeStatus = "disconnected" | "connecting" | "connected"
+
+export type RealtimeServerMessage =
+  | {
+      type: "ready"
+      userId: string
+    }
+  | {
+      type: "subscribed"
+      channelId: string
+    }
+  | {
+      type: "unsubscribed"
+      channelId: string
+    }
+  | {
+      type: "message.created"
+      payload: Message
+    }
+  | {
+      type: "message.updated"
+      payload: Message
+    }
+  | {
+      type: "message.deleted"
+      payload: {
+        id: string
+        channelId: string
+      }
+    }
+  | {
+      type: "reaction.updated"
+      payload: {
+        channelId: string
+        messageId: string
+        reactions: MessageReactionSummary[]
+      }
+    }
+  | {
+      type: "pong"
+    }
+  | {
+      type: "error"
+      error: string
+    }
+
+export function createRealtimeSocket(token: string): WebSocket {
+  const url = new URL("/v1/ws", WS_BASE)
+  url.searchParams.set("token", token)
+  return new WebSocket(url.toString())
+}
+
+export function parseRealtimeServerMessage(payload: string): RealtimeServerMessage | null {
+  try {
+    return JSON.parse(payload) as RealtimeServerMessage
+  } catch {
+    return null
+  }
+}

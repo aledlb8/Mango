@@ -1,0 +1,12 @@
+export const service = "api-gateway"
+export const port = Number(process.env.API_GATEWAY_PORT ?? 3001)
+export const corsOrigin = process.env.CORS_ORIGIN ?? "*"
+export const storeMode = process.env.STORE_MODE ?? "postgres"
+export const databaseUrl = process.env.DATABASE_URL ?? "postgres://mango:mango@localhost:5432/mango"
+export const allowMemoryFallback = process.env.ALLOW_MEMORY_FALLBACK !== "false"
+export const identityServiceUrl = process.env.IDENTITY_SERVICE_URL ?? "http://localhost:3002"
+export const preferIdentityServiceProxy = process.env.PREFER_IDENTITY_SERVICE_PROXY !== "false"
+export const communityServiceUrl = process.env.COMMUNITY_SERVICE_URL ?? "http://localhost:3003"
+export const preferCommunityServiceProxy = process.env.PREFER_COMMUNITY_SERVICE_PROXY !== "false"
+export const messagingServiceUrl = process.env.MESSAGING_SERVICE_URL ?? "http://localhost:3004"
+export const preferMessagingServiceProxy = process.env.PREFER_MESSAGING_SERVICE_PROXY !== "false"

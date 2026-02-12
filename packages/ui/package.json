@@ -1,0 +1,10 @@
+{
+  "name": "@mango/ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "echo \"ui package scaffolded\"",
+    "test": "echo \"ui package has no tests yet\""
+  }
+}

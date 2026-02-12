@@ -1,0 +1,28 @@
+{
+  "name": "mango-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "bun@1.3.7",
+  "workspaces": [
+    "services/api-gateway",
+    "services/identity-service",
+    "services/community-service",
+    "services/messaging-service",
+    "services/media-service",
+    "workers/notification-worker",
+    "packages/contracts",
+    "packages/config",
+    "packages/ui"
+  ],
+  "scripts": {
+    "bootstrap": "bun run scripts/bootstrap.ts",
+    "dev": "bun run scripts/dev.ts",
+    "dev:lite": "bun run scripts/dev-lite.ts",
+    "lint": "bun run scripts/lint.ts",
+    "test": "bun run scripts/test.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.2",
+    "typescript": "^5.9.3"
+  }
+}

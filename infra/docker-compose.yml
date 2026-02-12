@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mango-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mango}
+      POSTGRES_USER: ${POSTGRES_USER:-mango}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mango}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mango} -d ${POSTGRES_DB:-mango}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: mango-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  nats:
+    image: nats:2.11-alpine
+    container_name: mango-nats
+    command: ["-js"]
+    ports:
+      - "${NATS_PORT:-4222}:4222"
+      - "8222:8222"
+
+  minio:
+    image: minio/minio:latest
+    container_name: mango-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: mango-livekit
+    command: ["--config", "/etc/livekit/livekit.yaml"]
+    ports:
+      - "${LIVEKIT_PORT:-7880}:7880"
+      - "${LIVEKIT_RTC_TCP_PORT:-7881}:7881"
+      - "7882:7882/udp"
+    volumes:
+      - ./livekit.yaml:/etc/livekit/livekit.yaml:ro
+    depends_on:
+      redis:
+        condition: service_started
+
+volumes:
+  postgres_data:
+  minio_data:
