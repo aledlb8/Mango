@@ -15,6 +15,7 @@ Mango is a web-first real-time chat platform using a polyglot monorepo.
 - `services/*` - backend services (TypeScript and Go)
 - `workers/*` - async/background workers
 - `packages/*` - shared contracts/config
+- `packages/chat-store` - shared in-memory/Postgres chat-domain store implementation
 - `infra` - Docker Compose and local infrastructure configs
 - `scripts` - Bun scripts for bootstrap/dev/lint/test orchestration
 

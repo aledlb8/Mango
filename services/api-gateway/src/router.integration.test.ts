@@ -1,5 +1,18 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test"
-import type { AuthResponse, Channel, CreateMessageRequest, CreateServerRequest, Message, Server } from "@mango/contracts"
+import type {
+  AddReactionRequest,
+  AuthResponse,
+  Channel,
+  ChannelPermissionOverwrite,
+  CreateMessageRequest,
+  CreateRoleRequest,
+  CreateServerRequest,
+  Message,
+  Role,
+  Server,
+  ServerInvite,
+  User
+} from "@mango/contracts"
 import { MemoryStore } from "./data/memory-store"
 import { RealtimeHub } from "./realtime/hub"
 import { routeRequest as routeCommunityRequest } from "../../community-service/src/router"
@@ -12,6 +25,12 @@ type ServiceHits = {
   identity: number
   community: number
   messaging: number
+}
+
+type SocketEvent = {
+  type?: string
+  payload?: unknown
+  channelId?: string
 }
 
 type FakeSocket = {
@@ -63,6 +82,19 @@ function createGatewayContext(): unknown {
   }
 }
 
+function createUniqueSuffix(): string {
+  return crypto.randomUUID().replace(/-/g, "").slice(0, 10)
+}
+
+function createUniqueIdentity(prefix: string): { email: string; username: string; displayName: string } {
+  const suffix = createUniqueSuffix()
+  return {
+    email: `${prefix}-${suffix}@example.com`,
+    username: `${prefix}_${suffix}`.slice(0, 32),
+    displayName: `${prefix} ${suffix.slice(0, 6)}`
+  }
+}
+
 async function parseJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T
 }
@@ -93,6 +125,67 @@ async function callGateway<T>(params: {
     status: response.status,
     body
   }
+}
+
+async function registerUser(prefix: string): Promise<AuthResponse> {
+  const identity = createUniqueIdentity(prefix)
+  const register = await callGateway<AuthResponse>({
+    method: "POST",
+    path: "/v1/auth/register",
+    body: {
+      email: identity.email,
+      username: identity.username,
+      displayName: identity.displayName,
+      password: "password123"
+    }
+  })
+
+  expect(register.status).toBe(201)
+  return register.body
+}
+
+async function bootstrapServerAndChannel(token: string, namePrefix: string): Promise<{ server: Server; channel: Channel }> {
+  const createdServer = await callGateway<Server>({
+    method: "POST",
+    path: "/v1/servers",
+    token,
+    body: { name: `${namePrefix}-${createUniqueSuffix()}` } satisfies CreateServerRequest
+  })
+  expect(createdServer.status).toBe(201)
+
+  const createdChannel = await callGateway<Channel>({
+    method: "POST",
+    path: `/v1/servers/${createdServer.body.id}/channels`,
+    token,
+    body: { name: `general-${createUniqueSuffix().slice(0, 6)}` }
+  })
+  expect(createdChannel.status).toBe(201)
+
+  return {
+    server: createdServer.body,
+    channel: createdChannel.body
+  }
+}
+
+function attachRealtimeCollector(userId: string, channelId: string): SocketEvent[] {
+  const events: SocketEvent[] = []
+
+  const fakeSocket: FakeSocket = {
+    data: {
+      userId,
+      subscriptions: new Set<string>()
+    },
+    send(payload: string) {
+      events.push(JSON.parse(payload) as SocketEvent)
+    }
+  }
+
+  realtimeHub.addSubscription(fakeSocket as never, channelId)
+  return events
+}
+
+function eventsOfType(events: SocketEvent[], type: string): SocketEvent[] {
+  return events.filter((event) => event.type === type)
 }
 
 describe("api-gateway proxy integration", () => {
@@ -148,69 +241,184 @@ describe("api-gateway proxy integration", () => {
     restoreEnv()
   })
 
-  it("routes through dedicated services and falls back when messaging service is unavailable", async () => {
-    const register = await callGateway<AuthResponse>({
-      method: "POST",
-      path: "/v1/auth/register",
-      body: {
-        email: "proxy-test@example.com",
-        username: "proxy_user_01",
-        displayName: "Proxy User",
-        password: "password123"
-      }
-    })
+  it("emits realtime events for proxied message create/update/reaction/delete flows", async () => {
+    const hitsBefore = { ...serviceHits }
 
-    expect(register.status).toBe(201)
-    expect(serviceHits.identity).toBeGreaterThan(0)
+    const auth = await registerUser("events")
+    const bootstrap = await bootstrapServerAndChannel(auth.token, "events-server")
 
-    const token = register.body.token
-    expect(token.length).toBeGreaterThan(10)
-
-    const createdServer = await callGateway<Server>({
-      method: "POST",
-      path: "/v1/servers",
-      token,
-      body: { name: "Proxy Test Server" } satisfies CreateServerRequest
-    })
-
-    expect(createdServer.status).toBe(201)
-    expect(createdServer.body.name).toBe("Proxy Test Server")
-    expect(serviceHits.community).toBeGreaterThan(0)
-
-    const createdChannel = await callGateway<Channel>({
-      method: "POST",
-      path: `/v1/servers/${createdServer.body.id}/channels`,
-      token,
-      body: { name: "general" }
-    })
-
-    expect(createdChannel.status).toBe(201)
-    expect(createdChannel.body.name).toBe("general")
-
-    const socketEvents: Array<{ type?: string; payload?: unknown }> = []
-    const fakeSocket: FakeSocket = {
-      data: {
-        userId: register.body.user.id,
-        subscriptions: new Set<string>()
-      },
-      send(payload: string) {
-        socketEvents.push(JSON.parse(payload) as { type?: string; payload?: unknown })
-      }
-    }
-
-    realtimeHub.addSubscription(fakeSocket as never, createdChannel.body.id)
+    const socketEvents = attachRealtimeCollector(auth.user.id, bootstrap.channel.id)
 
     const createdMessage = await callGateway<Message>({
       method: "POST",
-      path: `/v1/channels/${createdChannel.body.id}/messages`,
-      token,
+      path: `/v1/channels/${bootstrap.channel.id}/messages`,
+      token: auth.token,
+      body: { body: "message one" } satisfies CreateMessageRequest
+    })
+    expect(createdMessage.status).toBe(201)
+
+    const updatedMessage = await callGateway<Message>({
+      method: "PATCH",
+      path: `/v1/messages/${createdMessage.body.id}`,
+      token: auth.token,
+      body: { body: "message one edited" }
+    })
+    expect(updatedMessage.status).toBe(200)
+    expect(updatedMessage.body.body).toBe("message one edited")
+
+    const reacted = await callGateway<{ messageId: string; reactions: { emoji: string; count: number }[] }>({
+      method: "POST",
+      path: `/v1/messages/${createdMessage.body.id}/reactions`,
+      token: auth.token,
+      body: { emoji: "🔥" } satisfies AddReactionRequest
+    })
+    expect(reacted.status).toBe(200)
+    expect(reacted.body.messageId).toBe(createdMessage.body.id)
+    expect(reacted.body.reactions.find((entry) => entry.emoji === "🔥")?.count).toBe(1)
+
+    const unreacted = await callGateway<{ messageId: string; reactions: { emoji: string; count: number }[] }>({
+      method: "DELETE",
+      path: `/v1/messages/${createdMessage.body.id}/reactions/${encodeURIComponent("🔥")}`,
+      token: auth.token
+    })
+    expect(unreacted.status).toBe(200)
+    expect(unreacted.body.reactions.find((entry) => entry.emoji === "🔥")).toBeUndefined()
+
+    const deleted = await callGateway<{ id: string; channelId: string }>({
+      method: "DELETE",
+      path: `/v1/messages/${createdMessage.body.id}`,
+      token: auth.token
+    })
+    expect(deleted.status).toBe(200)
+    expect(deleted.body.id).toBe(createdMessage.body.id)
+
+    const createdEvents = eventsOfType(socketEvents, "message.created")
+    const updatedEvents = eventsOfType(socketEvents, "message.updated")
+    const reactionEvents = eventsOfType(socketEvents, "reaction.updated")
+    const deletedEvents = eventsOfType(socketEvents, "message.deleted")
+
+    expect(createdEvents.length).toBe(1)
+    expect(updatedEvents.length).toBe(1)
+    expect(reactionEvents.length).toBe(2)
+    expect(deletedEvents.length).toBe(1)
+
+    const createdPayload = createdEvents[0]?.payload as Message
+    const updatedPayload = updatedEvents[0]?.payload as Message
+    const deletedPayload = deletedEvents[0]?.payload as { id: string; channelId: string }
+
+    expect(createdPayload.id).toBe(createdMessage.body.id)
+    expect(updatedPayload.body).toBe("message one edited")
+    expect(deletedPayload.id).toBe(createdMessage.body.id)
+
+    expect(serviceHits.identity).toBeGreaterThan(hitsBefore.identity)
+    expect(serviceHits.community).toBeGreaterThan(hitsBefore.community)
+    expect(serviceHits.messaging).toBeGreaterThan(hitsBefore.messaging)
+  })
+
+  it("routes invites, member management, roles, and overwrites through community-service", async () => {
+    const hitsBeforeCommunity = serviceHits.community
+
+    const owner = await registerUser("owner")
+    const member = await registerUser("member")
+
+    const bootstrap = await bootstrapServerAndChannel(owner.token, "community-flow")
+
+    const invite = await callGateway<ServerInvite>({
+      method: "POST",
+      path: `/v1/servers/${bootstrap.server.id}/invites`,
+      token: owner.token,
+      body: {}
+    })
+    expect(invite.status).toBe(201)
+    expect(invite.body.serverId).toBe(bootstrap.server.id)
+
+    const joined = await callGateway<Server>({
+      method: "POST",
+      path: `/v1/invites/${invite.body.code}/join`,
+      token: member.token
+    })
+    expect(joined.status).toBe(200)
+    expect(joined.body.id).toBe(bootstrap.server.id)
+
+    const listedMembers = await callGateway<User[]>({
+      method: "GET",
+      path: `/v1/servers/${bootstrap.server.id}/members`,
+      token: owner.token
+    })
+    expect(listedMembers.status).toBe(200)
+    expect(listedMembers.body.some((user) => user.id === member.user.id)).toBe(true)
+
+    const createdRole = await callGateway<Role>({
+      method: "POST",
+      path: `/v1/servers/${bootstrap.server.id}/roles`,
+      token: owner.token,
+      body: {
+        name: `Mod-${createUniqueSuffix().slice(0, 5)}`,
+        permissions: ["read_messages", "send_messages"]
+      } satisfies CreateRoleRequest
+    })
+    expect(createdRole.status).toBe(201)
+    expect(createdRole.body.serverId).toBe(bootstrap.server.id)
+
+    const assignRole = await callGateway<{ status: string }>({
+      method: "POST",
+      path: `/v1/servers/${bootstrap.server.id}/roles/assign`,
+      token: owner.token,
+      body: {
+        roleId: createdRole.body.id,
+        memberId: member.user.id
+      }
+    })
+    expect(assignRole.status).toBe(200)
+    expect(assignRole.body.status).toBe("ok")
+
+    const overwrite = await callGateway<ChannelPermissionOverwrite>({
+      method: "PUT",
+      path: `/v1/channels/${bootstrap.channel.id}/overwrites`,
+      token: owner.token,
+      body: {
+        targetType: "role",
+        targetId: createdRole.body.id,
+        allowPermissions: ["read_messages"],
+        denyPermissions: ["send_messages"]
+      }
+    })
+    expect(overwrite.status).toBe(200)
+    expect(overwrite.body.channelId).toBe(bootstrap.channel.id)
+    expect(overwrite.body.targetType).toBe("role")
+    expect(overwrite.body.targetId).toBe(createdRole.body.id)
+
+    const listedRoles = await callGateway<Role[]>({
+      method: "GET",
+      path: `/v1/servers/${bootstrap.server.id}/roles`,
+      token: owner.token
+    })
+    expect(listedRoles.status).toBe(200)
+    expect(listedRoles.body.some((role) => role.id === createdRole.body.id)).toBe(true)
+
+    expect(serviceHits.community).toBeGreaterThan(hitsBeforeCommunity)
+  })
+
+  it("routes through dedicated services and falls back when messaging service is unavailable", async () => {
+    const register = await registerUser("fallback")
+    expect(serviceHits.identity).toBeGreaterThan(0)
+
+    const bootstrap = await bootstrapServerAndChannel(register.token, "fallback-server")
+    expect(serviceHits.community).toBeGreaterThan(0)
+
+    const socketEvents = attachRealtimeCollector(register.user.id, bootstrap.channel.id)
+
+    const createdMessage = await callGateway<Message>({
+      method: "POST",
+      path: `/v1/channels/${bootstrap.channel.id}/messages`,
+      token: register.token,
       body: { body: "hello through proxy" } satisfies CreateMessageRequest
     })
 
     expect(createdMessage.status).toBe(201)
     expect(serviceHits.messaging).toBeGreaterThan(0)
 
-    const proxiedRealtimeEvents = socketEvents.filter((event) => event.type === "message.created")
+    const proxiedRealtimeEvents = eventsOfType(socketEvents, "message.created")
     expect(proxiedRealtimeEvents.length).toBe(1)
 
     const messagingHitsBeforeFallback = serviceHits.messaging
@@ -219,8 +427,8 @@ describe("api-gateway proxy integration", () => {
 
     const fallbackMessage = await callGateway<Message>({
       method: "POST",
-      path: `/v1/channels/${createdChannel.body.id}/messages`,
-      token,
+      path: `/v1/channels/${bootstrap.channel.id}/messages`,
+      token: register.token,
       body: { body: "hello through fallback" } satisfies CreateMessageRequest
     })
 
@@ -229,8 +437,8 @@ describe("api-gateway proxy integration", () => {
 
     const listedMessages = await callGateway<Message[]>({
       method: "GET",
-      path: `/v1/channels/${createdChannel.body.id}/messages`,
-      token
+      path: `/v1/channels/${bootstrap.channel.id}/messages`,
+      token: register.token
     })
 
     expect(listedMessages.status).toBe(200)

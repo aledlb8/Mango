@@ -9,6 +9,16 @@
         "typescript": "^5.9.3",
       },
     },
+    "packages/chat-store": {
+      "name": "@mango/chat-store",
+      "version": "0.1.0",
+      "dependencies": {
+        "@mango/contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "typescript": "^5.9.3",
+      },
+    },
     "packages/config": {
       "name": "@mango/config",
       "version": "0.1.0",
@@ -28,6 +38,7 @@
       "name": "@mango/api-gateway",
       "version": "0.1.0",
       "dependencies": {
+        "@mango/chat-store": "workspace:*",
         "@mango/contracts": "workspace:*",
       },
       "devDependencies": {
@@ -38,6 +49,7 @@
       "name": "@mango/community-service",
       "version": "0.1.0",
       "dependencies": {
+        "@mango/chat-store": "workspace:*",
         "@mango/contracts": "workspace:*",
       },
       "devDependencies": {
@@ -68,6 +80,7 @@
       "name": "@mango/messaging-service",
       "version": "0.1.0",
       "dependencies": {
+        "@mango/chat-store": "workspace:*",
         "@mango/contracts": "workspace:*",
       },
       "devDependencies": {
@@ -87,6 +100,8 @@
   },
   "packages": {
     "@mango/api-gateway": ["@mango/api-gateway@workspace:services/api-gateway"],
+
+    "@mango/chat-store": ["@mango/chat-store@workspace:packages/chat-store"],
 
     "@mango/community-service": ["@mango/community-service@workspace:services/community-service"],
 

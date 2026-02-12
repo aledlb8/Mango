@@ -7,6 +7,7 @@ const tsProjects = [
   "services/messaging-service",
   "services/media-service",
   "workers/notification-worker",
+  "packages/chat-store",
   "packages/contracts",
   "packages/ui",
   "packages/config"
