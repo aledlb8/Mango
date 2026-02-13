@@ -55,6 +55,7 @@ import {
   upsertMessage,
   upsertServer
 } from "./state-utils"
+import type { ChatAppRoute } from "./route"
 
 function urlBase64ToArrayBuffer(base64String: string): ArrayBuffer {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4)
@@ -70,7 +71,12 @@ function urlBase64ToArrayBuffer(base64String: string): ArrayBuffer {
   return buffer
 }
 
-export function useChatApp() {
+export function useChatApp(route: ChatAppRoute) {
+  const routeKind = route.kind
+  const routeServerId = routeKind === "server" ? route.serverId : null
+  const routeChannelId = routeKind === "server" ? (route.channelId ?? null) : null
+  const routeThreadId = routeKind === "dm" ? route.threadId : null
+
   const [token, setToken] = useState<string | null>(null)
   const [me, setMe] = useState<User | null>(null)
 
@@ -207,14 +213,20 @@ export function useChatApp() {
         setFriendRequests(nextFriendRequests)
         setDirectThreads(nextDirectThreads)
         setUsersById((current) => mergeUsersById(current, [currentUser, ...nextFriends]))
-        setSelectedServerId((current) =>
-          current && nextServers.some((server) => server.id === current) ? current : (nextServers[0]?.id ?? null)
-        )
-        setSelectedDirectThreadId((current) =>
-          current && nextDirectThreads.some((thread) => thread.id === current)
-            ? current
-            : null
-        )
+        if (routeKind === "server") {
+          setSelectedServerId(routeServerId)
+          setSelectedDirectThreadId(null)
+        } else if (routeKind === "dm") {
+          setSelectedServerId(null)
+          setSelectedDirectThreadId(
+            routeThreadId && nextDirectThreads.some((thread) => thread.id === routeThreadId)
+              ? routeThreadId
+              : null
+          )
+        } else {
+          setSelectedServerId(null)
+          setSelectedDirectThreadId(null)
+        }
 
         if (
           serversResult.status === "rejected" ||
@@ -230,7 +242,33 @@ export function useChatApp() {
         setErrorMessage(error instanceof Error ? error.message : "Session failed.")
       }
     })()
-  }, [token])
+  }, [token, routeKind, routeServerId, routeThreadId])
+
+  useEffect(() => {
+    if (!token) {
+      return
+    }
+
+    if (routeKind === "friends") {
+      setSelectedServerId(null)
+      setSelectedChannelId(null)
+      setSelectedDirectThreadId(null)
+      return
+    }
+
+    if (routeKind === "dm") {
+      setSelectedServerId(null)
+      setSelectedChannelId(null)
+      setSelectedDirectThreadId(routeThreadId)
+      return
+    }
+
+    setSelectedServerId(routeServerId)
+    setSelectedDirectThreadId(null)
+    if (routeChannelId) {
+      setSelectedChannelId(routeChannelId)
+    }
+  }, [token, routeKind, routeServerId, routeChannelId, routeThreadId])
 
   useEffect(() => {
     if (!token || !selectedServerId) {
@@ -243,16 +281,20 @@ export function useChatApp() {
       try {
         const nextChannels = await listChannels(token, selectedServerId)
         setChannels(nextChannels)
+        const desiredRouteChannelId =
+          routeKind === "server" && routeServerId === selectedServerId ? routeChannelId : null
         setSelectedChannelId((current) =>
-          current && nextChannels.some((channel) => channel.id === current)
-            ? current
-            : (nextChannels[0]?.id ?? null)
+          desiredRouteChannelId && nextChannels.some((channel) => channel.id === desiredRouteChannelId)
+            ? desiredRouteChannelId
+            : current && nextChannels.some((channel) => channel.id === current)
+              ? current
+              : (nextChannels[0]?.id ?? null)
         )
       } catch (error) {
         setErrorMessage(error instanceof Error ? error.message : "Failed to load channels.")
       }
     })()
-  }, [token, selectedServerId])
+  }, [token, selectedServerId, routeKind, routeServerId, routeChannelId])
 
   useEffect(() => {
     if (!token || !activeConversationId) {

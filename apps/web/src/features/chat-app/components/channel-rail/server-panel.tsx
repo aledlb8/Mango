@@ -12,7 +12,7 @@ type ServerPanelProps = {
   channelName: string
   latestInviteCode: string | null
   setChannelName: (value: string) => void
-  setSelectedChannelId: (value: string) => void
+  onSelectChannel: (channelId: string) => void
   onCreateChannel: (event: FormEvent<HTMLFormElement>) => Promise<void>
   onCreateInvite: () => Promise<void>
 }
@@ -105,7 +105,7 @@ export function ServerPanel(props: ServerPanelProps) {
               variant="sidebar-item"
               size="sidebar-item"
               data-active={props.selectedChannelId === channel.id}
-              onClick={() => props.setSelectedChannelId(channel.id)}
+              onClick={() => props.onSelectChannel(channel.id)}
             >
               <Hash className="h-4 w-4 shrink-0 opacity-60" />
               <span className="truncate">{channel.name}</span>

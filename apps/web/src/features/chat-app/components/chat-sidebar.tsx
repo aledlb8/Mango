@@ -11,7 +11,8 @@ type ChatSidebarProps = {
   selectedServerId: string | null
   serverName: string
   inviteCode: string
-  setSelectedServerId: (value: string | null) => void
+  onSelectHome: () => void
+  onSelectServer: (serverId: string) => void
   setServerName: (value: string) => void
   setInviteCode: (value: string) => void
   onCreateServer: (event: FormEvent<HTMLFormElement>) => Promise<void>
@@ -52,7 +53,7 @@ export function ChatSidebar(props: ChatSidebarProps) {
               ? "rounded-[16px] bg-primary text-primary-foreground hover:bg-primary/90"
               : "rounded-[24px] bg-secondary text-secondary-foreground hover:rounded-[16px] hover:bg-primary hover:text-primary-foreground"
           }`}
-          onClick={() => props.setSelectedServerId(null)}
+          onClick={props.onSelectHome}
           title="Home"
         >
           <Home className="h-5 w-5" />
@@ -79,7 +80,7 @@ export function ChatSidebar(props: ChatSidebarProps) {
                     ? `rounded-[16px] ${getServerColor(server.name)} text-white hover:opacity-90`
                     : "rounded-[24px] bg-secondary text-secondary-foreground hover:rounded-[16px] hover:bg-primary/80 hover:text-white"
                 }`}
-                onClick={() => props.setSelectedServerId(server.id)}
+                onClick={() => props.onSelectServer(server.id)}
                 title={server.name}
               >
                 {server.name.charAt(0).toUpperCase()}

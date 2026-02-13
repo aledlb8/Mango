@@ -16,7 +16,7 @@ type ChannelRailProps = {
   latestInviteCode: string | null
   pendingRequestCount: number
   setChannelName: (value: string) => void
-  setSelectedChannelId: (value: string) => void
+  onSelectChannel: (channelId: string) => void
   onSelectDirectThread: (value: string) => void
   onSelectFriendsView: () => void
   onCreateChannel: (event: FormEvent<HTMLFormElement>) => Promise<void>
@@ -38,7 +38,7 @@ export function ChannelRail(props: ChannelRailProps) {
           channelName={props.channelName}
           latestInviteCode={props.latestInviteCode}
           setChannelName={props.setChannelName}
-          setSelectedChannelId={props.setSelectedChannelId}
+          onSelectChannel={props.onSelectChannel}
           onCreateChannel={props.onCreateChannel}
           onCreateInvite={props.onCreateInvite}
         />
