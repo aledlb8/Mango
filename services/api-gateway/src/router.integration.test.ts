@@ -1,16 +1,21 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test"
 import type {
   AddReactionRequest,
+  Attachment,
   AuthResponse,
   Channel,
   ChannelPermissionOverwrite,
   CreateMessageRequest,
   CreateRoleRequest,
   CreateServerRequest,
+  DirectThread,
+  FriendRequest,
   Message,
+  ReadMarker,
   Role,
   Server,
   ServerInvite,
+  TypingIndicator,
   User
 } from "@mango/contracts"
 import { MemoryStore } from "./data/memory-store"
@@ -25,6 +30,7 @@ type ServiceHits = {
   identity: number
   community: number
   messaging: number
+  media: number
 }
 
 type SocketEvent = {
@@ -46,21 +52,26 @@ const realtimeHub = new RealtimeHub()
 const serviceHits: ServiceHits = {
   identity: 0,
   community: 0,
-  messaging: 0
+  messaging: 0,
+  media: 0
 }
 
 let identityServer: ReturnType<typeof Bun.serve> | null = null
 let communityServer: ReturnType<typeof Bun.serve> | null = null
 let messagingServer: ReturnType<typeof Bun.serve> | null = null
+let mediaServer: ReturnType<typeof Bun.serve> | null = null
 let routeGatewayRequest: GatewayRouteFn
+const mediaAttachmentsById = new Map<string, Attachment>()
 
 const originalEnv = {
   IDENTITY_SERVICE_URL: process.env.IDENTITY_SERVICE_URL,
   COMMUNITY_SERVICE_URL: process.env.COMMUNITY_SERVICE_URL,
   MESSAGING_SERVICE_URL: process.env.MESSAGING_SERVICE_URL,
+  MEDIA_SERVICE_URL: process.env.MEDIA_SERVICE_URL,
   PREFER_IDENTITY_SERVICE_PROXY: process.env.PREFER_IDENTITY_SERVICE_PROXY,
   PREFER_COMMUNITY_SERVICE_PROXY: process.env.PREFER_COMMUNITY_SERVICE_PROXY,
-  PREFER_MESSAGING_SERVICE_PROXY: process.env.PREFER_MESSAGING_SERVICE_PROXY
+  PREFER_MESSAGING_SERVICE_PROXY: process.env.PREFER_MESSAGING_SERVICE_PROXY,
+  PREFER_MEDIA_SERVICE_PROXY: process.env.PREFER_MEDIA_SERVICE_PROXY
 }
 
 function restoreEnv(): void {
@@ -167,7 +178,7 @@ async function bootstrapServerAndChannel(token: string, namePrefix: string): Pro
   }
 }
 
-function attachRealtimeCollector(userId: string, channelId: string): SocketEvent[] {
+function attachRealtimeCollector(userId: string, conversationId?: string): SocketEvent[] {
   const events: SocketEvent[] = []
 
   const fakeSocket: FakeSocket = {
@@ -180,7 +191,10 @@ function attachRealtimeCollector(userId: string, channelId: string): SocketEvent
     }
   }
 
-  realtimeHub.addSubscription(fakeSocket as never, channelId)
+  realtimeHub.registerSocket(fakeSocket as never)
+  if (conversationId) {
+    realtimeHub.addSubscription(fakeSocket as never, conversationId)
+  }
   return events
 }
 
@@ -223,18 +237,63 @@ describe("api-gateway proxy integration", () => {
       }
     })
 
+    mediaServer = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        serviceHits.media += 1
+
+        const { pathname } = new URL(request.url)
+        if (pathname === "/health") {
+          return Response.json({
+            service: "media-service",
+            status: "ok",
+            timestamp: new Date().toISOString()
+          })
+        }
+
+        if (pathname === "/v1/attachments" && request.method === "POST") {
+          const payload = (await request.json().catch(() => null)) as
+            | { fileName?: string; contentType?: string; sizeBytes?: number }
+            | null
+
+          if (!payload?.fileName || !payload.contentType || !payload.sizeBytes) {
+            return Response.json({ error: "Invalid attachment payload." }, { status: 400 })
+          }
+
+          const id = `att_${createUniqueSuffix()}`
+          const attachment: Attachment = {
+            id,
+            fileName: payload.fileName,
+            contentType: payload.contentType,
+            sizeBytes: payload.sizeBytes,
+            url: `/uploads/${id}/${encodeURIComponent(payload.fileName)}`,
+            uploadedBy: "unknown",
+            createdAt: new Date().toISOString()
+          }
+
+          mediaAttachmentsById.set(id, attachment)
+          return Response.json(attachment, { status: 201 })
+        }
+
+        return Response.json({ error: "Route not found." }, { status: 404 })
+      }
+    })
+
     process.env.IDENTITY_SERVICE_URL = `http://127.0.0.1:${identityServer.port}`
     process.env.COMMUNITY_SERVICE_URL = `http://127.0.0.1:${communityServer.port}`
     process.env.MESSAGING_SERVICE_URL = `http://127.0.0.1:${messagingServer.port}`
+    process.env.MEDIA_SERVICE_URL = `http://127.0.0.1:${mediaServer.port}`
     process.env.PREFER_IDENTITY_SERVICE_PROXY = "true"
     process.env.PREFER_COMMUNITY_SERVICE_PROXY = "true"
     process.env.PREFER_MESSAGING_SERVICE_PROXY = "true"
+    process.env.PREFER_MEDIA_SERVICE_PROXY = "true"
 
     const gatewayModule = await import("./router")
     routeGatewayRequest = gatewayModule.routeRequest as GatewayRouteFn
   })
 
   afterAll(() => {
+    mediaServer?.stop(true)
     messagingServer?.stop(true)
     communityServer?.stop(true)
     identityServer?.stop(true)
@@ -397,6 +456,200 @@ describe("api-gateway proxy integration", () => {
     expect(listedRoles.body.some((role) => role.id === createdRole.body.id)).toBe(true)
 
     expect(serviceHits.community).toBeGreaterThan(hitsBeforeCommunity)
+  })
+
+  it("uses friend requests instead of immediate add and supports accept flow", async () => {
+    const hitsBeforeIdentity = serviceHits.identity
+
+    const alice = await registerUser("friendalice")
+    const bob = await registerUser("friendbob")
+
+    const createdRequest = await callGateway<FriendRequest>({
+      method: "POST",
+      path: "/v1/friends/requests",
+      token: alice.token,
+      body: {
+        userId: bob.user.id
+      }
+    })
+
+    expect(createdRequest.status).toBe(201)
+    expect(createdRequest.body.fromUserId).toBe(alice.user.id)
+    expect(createdRequest.body.toUserId).toBe(bob.user.id)
+    expect(createdRequest.body.status).toBe("pending")
+
+    const bobPending = await callGateway<FriendRequest[]>({
+      method: "GET",
+      path: "/v1/friends/requests",
+      token: bob.token
+    })
+
+    expect(bobPending.status).toBe(200)
+    expect(bobPending.body.some((request) => request.id === createdRequest.body.id)).toBe(true)
+
+    const accepted = await callGateway<FriendRequest>({
+      method: "POST",
+      path: `/v1/friends/requests/${createdRequest.body.id}`,
+      token: bob.token,
+      body: {
+        action: "accept"
+      }
+    })
+
+    expect(accepted.status).toBe(200)
+    expect(accepted.body.status).toBe("accepted")
+
+    const aliceFriends = await callGateway<User[]>({
+      method: "GET",
+      path: "/v1/friends",
+      token: alice.token
+    })
+    expect(aliceFriends.status).toBe(200)
+    expect(aliceFriends.body.some((user) => user.id === bob.user.id)).toBe(true)
+
+    const bobFriends = await callGateway<User[]>({
+      method: "GET",
+      path: "/v1/friends",
+      token: bob.token
+    })
+    expect(bobFriends.status).toBe(200)
+    expect(bobFriends.body.some((user) => user.id === alice.user.id)).toBe(true)
+
+    expect(serviceHits.identity).toBeGreaterThan(hitsBeforeIdentity)
+  })
+
+  it("pushes direct-thread creation and messages to participants without refresh", async () => {
+    const alice = await registerUser("realtimealice")
+    const bob = await registerUser("realtimebob")
+
+    const bobEvents = attachRealtimeCollector(bob.user.id)
+
+    const thread = await callGateway<DirectThread>({
+      method: "POST",
+      path: "/v1/direct-threads",
+      token: alice.token,
+      body: {
+        participantIds: [bob.user.id]
+      }
+    })
+
+    expect(thread.status).toBe(201)
+
+    const createdThreadEvents = eventsOfType(bobEvents, "direct-thread.created")
+    expect(createdThreadEvents.length).toBe(1)
+    expect((createdThreadEvents[0]?.payload as DirectThread).id).toBe(thread.body.id)
+
+    const message = await callGateway<Message>({
+      method: "POST",
+      path: `/v1/direct-threads/${thread.body.id}/messages`,
+      token: alice.token,
+      body: {
+        body: "hello bob"
+      } satisfies CreateMessageRequest
+    })
+
+    expect(message.status).toBe(201)
+
+    const messageEvents = eventsOfType(bobEvents, "message.created")
+    expect(messageEvents.some((event) => (event.payload as Message).id === message.body.id)).toBe(true)
+  })
+
+  it("supports direct threads, attachments, read markers, and typing indicators", async () => {
+    const hitsBefore = { ...serviceHits }
+
+    const alice = await registerUser("directalice")
+    const bob = await registerUser("directbob")
+
+    const thread = await callGateway<DirectThread>({
+      method: "POST",
+      path: "/v1/direct-threads",
+      token: alice.token,
+      body: {
+        participantIds: [bob.user.id]
+      }
+    })
+
+    expect(thread.status).toBe(201)
+    expect(thread.body.kind).toBe("dm")
+    expect(thread.body.participantIds.includes(alice.user.id)).toBe(true)
+    expect(thread.body.participantIds.includes(bob.user.id)).toBe(true)
+
+    const uploadedAttachment = await callGateway<Attachment>({
+      method: "POST",
+      path: "/v1/attachments",
+      token: alice.token,
+      body: {
+        fileName: "demo.txt",
+        contentType: "text/plain",
+        sizeBytes: 128
+      }
+    })
+
+    expect(uploadedAttachment.status).toBe(201)
+    expect(uploadedAttachment.body.fileName).toBe("demo.txt")
+
+    const socketEvents = attachRealtimeCollector(alice.user.id, thread.body.id)
+
+    const createdMessage = await callGateway<Message>({
+      method: "POST",
+      path: `/v1/direct-threads/${thread.body.id}/messages`,
+      token: alice.token,
+      body: {
+        body: "hello from direct thread",
+        attachments: [uploadedAttachment.body]
+      } satisfies CreateMessageRequest
+    })
+
+    expect(createdMessage.status).toBe(201)
+    expect(createdMessage.body.conversationId).toBe(thread.body.id)
+    expect(createdMessage.body.directThreadId).toBe(thread.body.id)
+    expect(createdMessage.body.attachments.length).toBe(1)
+
+    const listedMessages = await callGateway<Message[]>({
+      method: "GET",
+      path: `/v1/direct-threads/${thread.body.id}/messages`,
+      token: alice.token
+    })
+    expect(listedMessages.status).toBe(200)
+    expect(listedMessages.body.some((message) => message.id === createdMessage.body.id)).toBe(true)
+
+    const updatedReadMarker = await callGateway<ReadMarker>({
+      method: "PUT",
+      path: `/v1/direct-threads/${thread.body.id}/read-marker`,
+      token: alice.token,
+      body: {
+        lastReadMessageId: createdMessage.body.id
+      }
+    })
+    expect(updatedReadMarker.status).toBe(200)
+    expect(updatedReadMarker.body.lastReadMessageId).toBe(createdMessage.body.id)
+
+    const fetchedReadMarker = await callGateway<ReadMarker>({
+      method: "GET",
+      path: `/v1/direct-threads/${thread.body.id}/read-marker`,
+      token: alice.token
+    })
+    expect(fetchedReadMarker.status).toBe(200)
+    expect(fetchedReadMarker.body.lastReadMessageId).toBe(createdMessage.body.id)
+
+    const typing = await callGateway<TypingIndicator>({
+      method: "POST",
+      path: `/v1/direct-threads/${thread.body.id}/typing`,
+      token: alice.token,
+      body: {
+        isTyping: true
+      }
+    })
+    expect(typing.status).toBe(200)
+    expect(typing.body.conversationId).toBe(thread.body.id)
+
+    const createdEvents = eventsOfType(socketEvents, "message.created")
+    const typingEvents = eventsOfType(socketEvents, "typing.updated")
+
+    expect(createdEvents.length).toBe(1)
+    expect(typingEvents.length).toBe(1)
+    expect(serviceHits.messaging).toBeGreaterThan(hitsBefore.messaging)
+    expect(serviceHits.media).toBeGreaterThan(hitsBefore.media)
   })
 
   it("routes through dedicated services and falls back when messaging service is unavailable", async () => {

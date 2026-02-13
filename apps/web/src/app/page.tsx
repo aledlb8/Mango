@@ -1,6 +1,6 @@
 "use client"
 
-import { AuthGate, ChannelRail, ChatSidebar, ChatThread } from "@/features/chat-app/components"
+import { AuthGate, ChannelRail, ChatSidebar, ChatThread, FriendsView } from "@/features/chat-app/components"
 import { useChatApp } from "@/features/chat-app/use-chat-app"
 
 export default function Home() {
@@ -29,6 +29,8 @@ export default function Home() {
     )
   }
 
+  const showFriendsView = !app.selectedServer && !app.selectedDirectThread
+
   return (
     <div className="flex h-screen overflow-hidden">
       <ChatSidebar
@@ -49,38 +51,61 @@ export default function Home() {
         me={app.me}
         selectedServer={app.selectedServer}
         selectedChannelId={app.selectedChannelId}
+        selectedDirectThreadId={app.selectedDirectThreadId}
         channels={app.channels}
+        directThreads={app.directThreads}
         busyKey={app.busyKey}
         channelName={app.channelName}
         latestInviteCode={app.latestInviteCode}
-        friends={app.friends}
-        friendSearchQuery={app.friendSearchQuery}
-        friendSearchResults={app.friendSearchResults}
+        pendingRequestCount={app.pendingRequestCount}
         setChannelName={app.setChannelName}
         setSelectedChannelId={app.setSelectedChannelId}
-        setFriendSearchQuery={app.setFriendSearchQuery}
+        onSelectDirectThread={app.handleSelectDirectThread}
+        onSelectFriendsView={app.handleSelectFriendsView}
         onCreateChannel={app.handleCreateChannel}
         onCreateInvite={app.handleCreateInvite}
-        onSearchFriends={app.handleSearchFriends}
-        onAddFriend={app.handleAddFriend}
+        getDirectThreadLabel={app.getDirectThreadLabel}
+        getDirectThreadAvatar={app.getDirectThreadAvatar}
         onSignOut={app.handleSignOut}
       />
 
-      <ChatThread
-        me={app.me}
-        selectedChannel={app.selectedChannel}
-        messages={app.messages}
-        messageBody={app.messageBody}
-        busyKey={app.busyKey}
-        realtimeStatus={app.realtimeStatus}
-        setMessageBody={app.setMessageBody}
-        onSendMessage={app.handleSendMessage}
-        onUpdateMessage={app.handleUpdateMessage}
-        onDeleteMessage={app.handleDeleteMessage}
-        onAddReaction={app.handleAddReaction}
-        onRemoveReaction={app.handleRemoveReaction}
-        getAuthorLabel={app.getAuthorLabel}
-      />
+      {showFriendsView ? (
+        <FriendsView
+          me={app.me}
+          friends={app.friends}
+          friendRequests={app.friendRequests}
+          friendSearchQuery={app.friendSearchQuery}
+          friendSearchResults={app.friendSearchResults}
+          busyKey={app.busyKey}
+          setFriendSearchQuery={app.setFriendSearchQuery}
+          onSearchFriends={app.handleSearchFriends}
+          onSendFriendRequest={app.handleSendFriendRequest}
+          onRespondToFriendRequest={app.handleRespondToFriendRequest}
+          onOpenDirectThread={app.handleOpenDirectThread}
+          getUserLabel={app.getUserLabel}
+        />
+      ) : (
+        <ChatThread
+          me={app.me}
+          selectedChannel={app.selectedChannel}
+          selectedDirectThread={app.selectedDirectThread}
+          messages={app.messages}
+          messageBody={app.messageBody}
+          pendingAttachments={app.pendingAttachments}
+          typingUserLabels={app.typingUserLabels}
+          busyKey={app.busyKey}
+          realtimeStatus={app.realtimeStatus}
+          setMessageBody={app.setMessageBody}
+          onPickAttachments={app.handlePickAttachments}
+          onRemovePendingAttachment={app.handleRemovePendingAttachment}
+          onSendMessage={app.handleSendMessage}
+          onUpdateMessage={app.handleUpdateMessage}
+          onDeleteMessage={app.handleDeleteMessage}
+          onAddReaction={app.handleAddReaction}
+          onRemoveReaction={app.handleRemoveReaction}
+          getAuthorLabel={app.getAuthorLabel}
+        />
+      )}
     </div>
   )
 }

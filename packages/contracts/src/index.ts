@@ -41,6 +41,21 @@ export type AddFriendRequest = {
   userId: string;
 };
 
+export type FriendRequestStatus = "pending" | "accepted" | "rejected";
+
+export type FriendRequest = {
+  id: string;
+  fromUserId: string;
+  toUserId: string;
+  status: FriendRequestStatus;
+  createdAt: string;
+  respondedAt: string | null;
+};
+
+export type RespondFriendRequestRequest = {
+  action: "accept" | "reject";
+};
+
 export type ServerInvite = {
   code: string;
   serverId: string;
@@ -71,6 +86,29 @@ export type Channel = {
   createdAt: string;
 };
 
+export type Attachment = {
+  id: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  url: string;
+  uploadedBy: string;
+  createdAt: string;
+};
+
+export type DirectThreadType = "dm" | "group";
+
+export type DirectThread = {
+  id: string;
+  channelId: string;
+  kind: DirectThreadType;
+  ownerId: string;
+  title: string;
+  participantIds: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type Permission =
   | "manage_server"
   | "manage_channels"
@@ -99,8 +137,11 @@ export type ChannelPermissionOverwrite = {
 export type Message = {
   id: string;
   channelId: string;
+  conversationId: string;
+  directThreadId: string | null;
   authorId: string;
   body: string;
+  attachments: Attachment[];
   createdAt: string;
   updatedAt: string | null;
   reactions: MessageReactionSummary[];
@@ -114,6 +155,23 @@ export type MessageReactionSummary = {
 export type MessageDeletedEvent = {
   id: string;
   channelId: string;
+  conversationId: string;
+  directThreadId: string | null;
+};
+
+export type ReadMarker = {
+  conversationId: string;
+  userId: string;
+  lastReadMessageId: string | null;
+  updatedAt: string;
+};
+
+export type TypingIndicator = {
+  conversationId: string;
+  directThreadId: string | null;
+  userId: string;
+  isTyping: boolean;
+  expiresAt: string;
 };
 
 export type CreateServerRequest = {
@@ -126,10 +184,30 @@ export type CreateChannelRequest = {
 
 export type CreateMessageRequest = {
   body: string;
+  attachments?: Attachment[];
 };
 
 export type UpdateMessageRequest = {
   body: string;
+};
+
+export type CreateDirectThreadRequest = {
+  participantIds: string[];
+  title?: string;
+};
+
+export type UpdateReadMarkerRequest = {
+  lastReadMessageId: string | null;
+};
+
+export type TypingIndicatorRequest = {
+  isTyping?: boolean;
+};
+
+export type CreateAttachmentRequest = {
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
 };
 
 export type AddReactionRequest = {
@@ -164,11 +242,13 @@ export type ErrorResponse = {
 export type RealtimeClientMessage =
   | {
       type: "subscribe";
-      channelId: string;
+      channelId?: string;
+      conversationId?: string;
     }
   | {
       type: "unsubscribe";
-      channelId: string;
+      channelId?: string;
+      conversationId?: string;
     }
   | {
       type: "ping";
@@ -192,6 +272,10 @@ export type RealtimeServerMessage =
       payload: Message;
     }
   | {
+      type: "direct-thread.created";
+      payload: DirectThread;
+    }
+  | {
       type: "message.updated";
       payload: Message;
     }
@@ -202,10 +286,15 @@ export type RealtimeServerMessage =
   | {
       type: "reaction.updated";
       payload: {
-        channelId: string;
+        conversationId: string;
+        directThreadId: string | null;
         messageId: string;
         reactions: MessageReactionSummary[];
       };
+    }
+  | {
+      type: "typing.updated";
+      payload: TypingIndicator;
     }
   | {
       type: "pong";

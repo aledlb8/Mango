@@ -1,5 +1,11 @@
-import type { AddReactionRequest, CreateMessageRequest, Message, UpdateMessageRequest } from "@mango/contracts"
+import type {
+  AddReactionRequest,
+  CreateMessageRequest,
+  Message,
+  UpdateMessageRequest
+} from "@mango/contracts"
 import { getAuthenticatedUser } from "../auth/session"
+import { normalizeAttachments } from "./message-attachments"
 import { readJson } from "../http/request"
 import { error, json } from "../http/response"
 import type { RouteContext } from "../router-context"
@@ -37,7 +43,8 @@ export async function handleCreateMessage(
     return error(ctx.corsOrigin, 400, "Message body exceeds 2000 characters.")
   }
 
-  const message: Message = await ctx.store.createMessage(channelId, user.id, text)
+  const attachments = normalizeAttachments(body.attachments, user.id)
+  const message: Message = await ctx.store.createMessage(channelId, user.id, text, attachments)
 
   return json(ctx.corsOrigin, 201, message)
 }
@@ -194,6 +201,8 @@ export async function handleAddReaction(
 
   return json(ctx.corsOrigin, 200, {
     messageId,
+    conversationId: message.conversationId,
+    directThreadId: message.directThreadId,
     reactions
   })
 }
@@ -232,6 +241,8 @@ export async function handleRemoveReaction(
 
   return json(ctx.corsOrigin, 200, {
     messageId,
+    conversationId: message.conversationId,
+    directThreadId: message.directThreadId,
     reactions
   })
 }

@@ -1,10 +1,19 @@
 import { createHealthResponse } from "@mango/contracts"
 import { handleGetMe, handleLogin, handleRegister } from "./handlers/auth"
-import { handleAddFriend, handleGetUserById, handleListFriends, handleSearchUsers } from "./handlers/social"
+import {
+  handleCreateFriendRequest,
+  handleGetUserById,
+  handleListFriendRequests,
+  handleListFriends,
+  handleRespondFriendRequest,
+  handleSearchUsers
+} from "./handlers/social"
 import { corsHeaders, json } from "./http/response"
 import type { IdentityRouteContext } from "./router-context"
 
 const friendsRoute = /^\/v1\/friends$/
+const friendRequestsRoute = /^\/v1\/friends\/requests$/
+const friendRequestRoute = /^\/v1\/friends\/requests\/([^/]+)$/
 const userRoute = /^\/v1\/users\/([^/]+)$/
 
 export async function routeRequest(request: Request, ctx: IdentityRouteContext): Promise<Response> {
@@ -47,7 +56,20 @@ export async function routeRequest(request: Request, ctx: IdentityRouteContext):
   }
 
   if (friendsRoute.test(pathname) && request.method === "POST") {
-    return await handleAddFriend(request, ctx)
+    return await handleCreateFriendRequest(request, ctx)
+  }
+
+  if (friendRequestsRoute.test(pathname) && request.method === "GET") {
+    return await handleListFriendRequests(request, ctx)
+  }
+
+  if (friendRequestsRoute.test(pathname) && request.method === "POST") {
+    return await handleCreateFriendRequest(request, ctx)
+  }
+
+  const friendRequestMatch = pathname.match(friendRequestRoute)
+  if (friendRequestMatch?.[1] && request.method === "POST") {
+    return await handleRespondFriendRequest(request, friendRequestMatch[1], ctx)
   }
 
   return json(ctx.corsOrigin, 200, {
@@ -61,7 +83,10 @@ export async function routeRequest(request: Request, ctx: IdentityRouteContext):
       "GET /v1/users/search?q=term",
       "GET /v1/users/:userId",
       "GET /v1/friends",
-      "POST /v1/friends"
+      "POST /v1/friends",
+      "GET /v1/friends/requests",
+      "POST /v1/friends/requests",
+      "POST /v1/friends/requests/:requestId"
     ]
   })
 }

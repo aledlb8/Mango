@@ -13,6 +13,17 @@ export type AuthResponse = {
   user: User
 }
 
+export type FriendRequestStatus = "pending" | "accepted" | "rejected"
+
+export type FriendRequest = {
+  id: string
+  fromUserId: string
+  toUserId: string
+  status: FriendRequestStatus
+  createdAt: string
+  respondedAt: string | null
+}
+
 export type Server = {
   id: string
   name: string
@@ -36,6 +47,27 @@ export type Channel = {
   name: string
   type: "text"
   createdAt: string
+}
+
+export type Attachment = {
+  id: string
+  fileName: string
+  contentType: string
+  sizeBytes: number
+  url: string
+  uploadedBy: string
+  createdAt: string
+}
+
+export type DirectThread = {
+  id: string
+  channelId: string
+  kind: "dm" | "group"
+  ownerId: string
+  title: string
+  participantIds: string[]
+  createdAt: string
+  updatedAt: string
 }
 
 export type Permission = "manage_server" | "manage_channels" | "read_messages" | "send_messages"
@@ -67,11 +99,29 @@ export type MessageReactionSummary = {
 export type Message = {
   id: string
   channelId: string
+  conversationId: string
+  directThreadId: string | null
   authorId: string
   body: string
+  attachments: Attachment[]
   createdAt: string
   updatedAt: string | null
   reactions: MessageReactionSummary[]
+}
+
+export type ReadMarker = {
+  conversationId: string
+  userId: string
+  lastReadMessageId: string | null
+  updatedAt: string
+}
+
+export type TypingIndicator = {
+  conversationId: string
+  directThreadId: string | null
+  userId: string
+  isTyping: boolean
+  expiresAt: string
 }
 
 type RequestOptions = {
@@ -126,6 +176,17 @@ export function getUserById(token: string, userId: string) {
   return request<User>(`/v1/users/${encodeURIComponent(userId)}`, { token })
 }
 
+export function uploadAttachment(
+  token: string,
+  payload: { fileName: string; contentType: string; sizeBytes: number }
+) {
+  return request<Attachment>("/v1/attachments", {
+    method: "POST",
+    token,
+    body: payload
+  })
+}
+
 export function searchUsers(token: string, query: string) {
   const params = new URLSearchParams({ q: query })
   return request<User[]>(`/v1/users/search?${params.toString()}`, { token })
@@ -135,8 +196,24 @@ export function listFriends(token: string) {
   return request<User[]>("/v1/friends", { token })
 }
 
-export function addFriend(token: string, payload: { userId: string }) {
-  return request<{ status: "ok" }>("/v1/friends", {
+export function listFriendRequests(token: string) {
+  return request<FriendRequest[]>("/v1/friends/requests", { token })
+}
+
+export function sendFriendRequest(token: string, payload: { userId: string }) {
+  return request<FriendRequest>("/v1/friends/requests", {
+    method: "POST",
+    token,
+    body: payload
+  })
+}
+
+export function respondFriendRequest(
+  token: string,
+  requestId: string,
+  payload: { action: "accept" | "reject" }
+) {
+  return request<FriendRequest>(`/v1/friends/requests/${encodeURIComponent(requestId)}`, {
     method: "POST",
     token,
     body: payload
@@ -182,12 +259,99 @@ export function createChannel(token: string, serverId: string, payload: { name: 
   })
 }
 
+export function listDirectThreads(token: string) {
+  return request<DirectThread[]>("/v1/direct-threads", { token })
+}
+
+export function createDirectThread(
+  token: string,
+  payload: { participantIds: string[]; title?: string }
+) {
+  return request<DirectThread>("/v1/direct-threads", {
+    method: "POST",
+    token,
+    body: payload
+  })
+}
+
+export function listDirectThreadMessages(token: string, threadId: string) {
+  return request<Message[]>(`/v1/direct-threads/${encodeURIComponent(threadId)}/messages`, { token })
+}
+
+export function createDirectThreadMessage(
+  token: string,
+  threadId: string,
+  payload: { body: string; attachments?: Attachment[] }
+) {
+  return request<Message>(`/v1/direct-threads/${encodeURIComponent(threadId)}/messages`, {
+    method: "POST",
+    token,
+    body: payload
+  })
+}
+
 export function listMessages(token: string, channelId: string) {
   return request<Message[]>(`/v1/channels/${channelId}/messages`, { token })
 }
 
-export function createMessage(token: string, channelId: string, payload: { body: string }) {
+export function createMessage(
+  token: string,
+  channelId: string,
+  payload: { body: string; attachments?: Attachment[] }
+) {
   return request<Message>(`/v1/channels/${channelId}/messages`, {
+    method: "POST",
+    token,
+    body: payload
+  })
+}
+
+export function getChannelReadMarker(token: string, channelId: string) {
+  return request<ReadMarker>(`/v1/channels/${channelId}/read-marker`, { token })
+}
+
+export function updateChannelReadMarker(
+  token: string,
+  channelId: string,
+  payload: { lastReadMessageId: string | null }
+) {
+  return request<ReadMarker>(`/v1/channels/${channelId}/read-marker`, {
+    method: "PUT",
+    token,
+    body: payload
+  })
+}
+
+export function getDirectThreadReadMarker(token: string, threadId: string) {
+  return request<ReadMarker>(`/v1/direct-threads/${encodeURIComponent(threadId)}/read-marker`, { token })
+}
+
+export function updateDirectThreadReadMarker(
+  token: string,
+  threadId: string,
+  payload: { lastReadMessageId: string | null }
+) {
+  return request<ReadMarker>(`/v1/direct-threads/${encodeURIComponent(threadId)}/read-marker`, {
+    method: "PUT",
+    token,
+    body: payload
+  })
+}
+
+export function sendChannelTyping(token: string, channelId: string, payload: { isTyping?: boolean } = {}) {
+  return request<TypingIndicator>(`/v1/channels/${channelId}/typing`, {
+    method: "POST",
+    token,
+    body: payload
+  })
+}
+
+export function sendDirectThreadTyping(
+  token: string,
+  threadId: string,
+  payload: { isTyping?: boolean } = {}
+) {
+  return request<TypingIndicator>(`/v1/direct-threads/${encodeURIComponent(threadId)}/typing`, {
     method: "POST",
     token,
     body: payload

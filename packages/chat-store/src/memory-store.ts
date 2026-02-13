@@ -1,10 +1,14 @@
 import type {
+  Attachment,
   Channel,
   ChannelPermissionOverwrite,
+  DirectThread,
+  FriendRequest,
   Message,
   MessageDeletedEvent,
   MessageReactionSummary,
   Permission,
+  ReadMarker,
   Role,
   ServerInvite,
   Server,
@@ -24,18 +28,26 @@ type MemoryState = {
   usersByEmail: Map<string, StoredUser>
   usersByUsername: Map<string, StoredUser>
   sessionsByToken: Map<string, string>
+  directThreadsById: Map<string, DirectThread>
+  directThreadIdsByUserId: Map<string, string[]>
+  directThreadIdByChannelId: Map<string, string>
+  dmThreadIdsByPairKey: Map<string, string>
   serversById: Map<string, Server>
+  hiddenServerIds: Set<string>
   membersByServerId: Map<string, Set<string>>
   channelsById: Map<string, Channel>
+  hiddenChannelIds: Set<string>
   channelIdsByServerId: Map<string, string[]>
   messagesById: Map<string, Message>
   messageIdsByChannelId: Map<string, string[]>
+  readMarkersByConversationUser: Map<string, ReadMarker>
   rolesById: Map<string, Role>
   roleIdsByServerId: Map<string, string[]>
   memberRoleIdsByServerUser: Map<string, Set<string>>
   overwritesByChannelId: Map<string, ChannelPermissionOverwrite[]>
   reactionUsersByMessageId: Map<string, Map<string, Set<string>>>
   friendsByUserId: Map<string, Set<string>>
+  friendRequestsById: Map<string, FriendRequest>
   invitesByCode: Map<string, ServerInvite>
 }
 
@@ -45,18 +57,26 @@ function createMemoryState(): MemoryState {
     usersByEmail: new Map<string, StoredUser>(),
     usersByUsername: new Map<string, StoredUser>(),
     sessionsByToken: new Map<string, string>(),
+    directThreadsById: new Map<string, DirectThread>(),
+    directThreadIdsByUserId: new Map<string, string[]>(),
+    directThreadIdByChannelId: new Map<string, string>(),
+    dmThreadIdsByPairKey: new Map<string, string>(),
     serversById: new Map<string, Server>(),
+    hiddenServerIds: new Set<string>(),
     membersByServerId: new Map<string, Set<string>>(),
     channelsById: new Map<string, Channel>(),
+    hiddenChannelIds: new Set<string>(),
     channelIdsByServerId: new Map<string, string[]>(),
     messagesById: new Map<string, Message>(),
     messageIdsByChannelId: new Map<string, string[]>(),
+    readMarkersByConversationUser: new Map<string, ReadMarker>(),
     rolesById: new Map<string, Role>(),
     roleIdsByServerId: new Map<string, string[]>(),
     memberRoleIdsByServerUser: new Map<string, Set<string>>(),
     overwritesByChannelId: new Map<string, ChannelPermissionOverwrite[]>(),
     reactionUsersByMessageId: new Map<string, Map<string, Set<string>>>(),
     friendsByUserId: new Map<string, Set<string>>(),
+    friendRequestsById: new Map<string, FriendRequest>(),
     invitesByCode: new Map<string, ServerInvite>()
   }
 }
@@ -72,6 +92,27 @@ function toPublicUser(user: StoredUser): User {
     username: user.username,
     displayName: user.displayName,
     createdAt: user.createdAt
+  }
+}
+
+function conversationReadMarkerKey(conversationId: string, userId: string): string {
+  return `${conversationId}:${userId}`
+}
+
+function dmPairKey(userIds: string[]): string {
+  return [...userIds].sort((a, b) => a.localeCompare(b)).join(":")
+}
+
+function cloneAttachment(attachment: Attachment): Attachment {
+  return {
+    ...attachment
+  }
+}
+
+function cloneDirectThread(thread: DirectThread): DirectThread {
+  return {
+    ...thread,
+    participantIds: [...thread.participantIds]
   }
 }
 
@@ -97,6 +138,7 @@ function summarizeReactions(reactionUsers: Map<string, Set<string>> | undefined)
 function cloneMessage(message: Message): Message {
   return {
     ...message,
+    attachments: message.attachments.map(cloneAttachment),
     reactions: [...message.reactions]
   }
 }
@@ -165,6 +207,77 @@ export class MemoryStore implements AppStore {
     this.state.friendsByUserId.set(friendId, friendFriends)
   }
 
+  async createFriendRequest(fromUserId: string, toUserId: string): Promise<FriendRequest> {
+    if (fromUserId === toUserId) {
+      throw new Error("You cannot send a friend request to yourself.")
+    }
+
+    const alreadyFriends = this.state.friendsByUserId.get(fromUserId)?.has(toUserId) ?? false
+    if (alreadyFriends) {
+      throw new Error("Users are already friends.")
+    }
+
+    const existing = Array.from(this.state.friendRequestsById.values()).find((request) => {
+      if (request.status !== "pending") {
+        return false
+      }
+
+      return (
+        (request.fromUserId === fromUserId && request.toUserId === toUserId) ||
+        (request.fromUserId === toUserId && request.toUserId === fromUserId)
+      )
+    })
+
+    if (existing) {
+      return { ...existing }
+    }
+
+    const request: FriendRequest = {
+      id: createId("frq"),
+      fromUserId,
+      toUserId,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      respondedAt: null
+    }
+
+    this.state.friendRequestsById.set(request.id, request)
+    return { ...request }
+  }
+
+  async listFriendRequests(userId: string): Promise<FriendRequest[]> {
+    return Array.from(this.state.friendRequestsById.values())
+      .filter((request) => request.status === "pending")
+      .filter((request) => request.fromUserId === userId || request.toUserId === userId)
+      .map((request) => ({ ...request }))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  }
+
+  async respondFriendRequest(
+    requestId: string,
+    responderUserId: string,
+    action: "accept" | "reject"
+  ): Promise<FriendRequest | null> {
+    const request = this.state.friendRequestsById.get(requestId)
+    if (!request || request.status !== "pending") {
+      return null
+    }
+
+    if (request.toUserId !== responderUserId) {
+      return null
+    }
+
+    request.status = action === "accept" ? "accepted" : "rejected"
+    request.respondedAt = new Date().toISOString()
+    this.state.friendRequestsById.set(request.id, request)
+
+    if (action === "accept") {
+      await this.addFriend(request.fromUserId, request.toUserId)
+    }
+
+    return { ...request }
+  }
+
   async listFriends(userId: string): Promise<User[]> {
     const friendIds = Array.from(this.state.friendsByUserId.get(userId) ?? [])
     const friends: User[] = []
@@ -186,6 +299,147 @@ export class MemoryStore implements AppStore {
 
   async getUserIdByToken(token: string): Promise<string | null> {
     return this.state.sessionsByToken.get(token) ?? null
+  }
+
+  async createDirectThread(ownerId: string, participantIds: string[], title: string): Promise<DirectThread> {
+    const uniqueParticipantIds = Array.from(new Set([ownerId, ...participantIds])).filter((userId) =>
+      this.state.usersById.has(userId)
+    )
+
+    if (uniqueParticipantIds.length < 2) {
+      throw new Error("Direct threads require at least two existing users.")
+    }
+
+    const kind: DirectThread["kind"] = uniqueParticipantIds.length === 2 ? "dm" : "group"
+    if (kind === "dm") {
+      const key = dmPairKey(uniqueParticipantIds)
+      const existingThreadId = this.state.dmThreadIdsByPairKey.get(key)
+      if (existingThreadId) {
+        const existingThread = this.state.directThreadsById.get(existingThreadId)
+        if (existingThread) {
+          return cloneDirectThread(existingThread)
+        }
+      }
+    }
+
+    const createdAt = new Date().toISOString()
+    const serverId = createId("srv")
+    const channelId = createId("chn")
+
+    const server: Server = {
+      id: serverId,
+      name: kind === "dm" ? "Direct chat backing server" : "Group chat backing server",
+      ownerId,
+      createdAt
+    }
+
+    this.state.serversById.set(server.id, server)
+    this.state.hiddenServerIds.add(server.id)
+    this.state.membersByServerId.set(server.id, new Set(uniqueParticipantIds))
+    this.state.channelIdsByServerId.set(server.id, [channelId])
+
+    const everyoneRole: Role = {
+      id: createId("rol"),
+      serverId: server.id,
+      name: "@everyone",
+      permissions: DEFAULT_MEMBER_PERMISSIONS,
+      isDefault: true,
+      createdAt
+    }
+
+    const ownerRole: Role = {
+      id: createId("rol"),
+      serverId: server.id,
+      name: "Owner",
+      permissions: OWNER_ROLE_PERMISSIONS,
+      isDefault: false,
+      createdAt
+    }
+
+    this.state.rolesById.set(everyoneRole.id, everyoneRole)
+    this.state.rolesById.set(ownerRole.id, ownerRole)
+    this.state.roleIdsByServerId.set(server.id, [everyoneRole.id, ownerRole.id])
+
+    for (const participantId of uniqueParticipantIds) {
+      const roleIds = new Set<string>([everyoneRole.id])
+      if (participantId === ownerId) {
+        roleIds.add(ownerRole.id)
+      }
+      this.state.memberRoleIdsByServerUser.set(memberRoleKey(server.id, participantId), roleIds)
+    }
+
+    const channel: Channel = {
+      id: channelId,
+      serverId: server.id,
+      name: kind === "dm" ? "direct" : "group",
+      type: "text",
+      createdAt
+    }
+
+    this.state.channelsById.set(channel.id, channel)
+    this.state.hiddenChannelIds.add(channel.id)
+    this.state.messageIdsByChannelId.set(channel.id, [])
+    this.state.overwritesByChannelId.set(channel.id, [])
+
+    const normalizedTitle = title.trim()
+    const thread: DirectThread = {
+      id: createId("thr"),
+      channelId: channel.id,
+      kind,
+      ownerId,
+      title: normalizedTitle || (kind === "dm" ? "Direct Message" : "Group Chat"),
+      participantIds: uniqueParticipantIds,
+      createdAt,
+      updatedAt: createdAt
+    }
+
+    this.state.directThreadsById.set(thread.id, thread)
+    this.state.directThreadIdByChannelId.set(channel.id, thread.id)
+
+    for (const participantId of uniqueParticipantIds) {
+      const ids = this.state.directThreadIdsByUserId.get(participantId) ?? []
+      if (!ids.includes(thread.id)) {
+        ids.push(thread.id)
+        this.state.directThreadIdsByUserId.set(participantId, ids)
+      }
+    }
+
+    if (kind === "dm") {
+      this.state.dmThreadIdsByPairKey.set(dmPairKey(uniqueParticipantIds), thread.id)
+    }
+
+    return cloneDirectThread(thread)
+  }
+
+  async listDirectThreadsForUser(userId: string): Promise<DirectThread[]> {
+    const threadIds = this.state.directThreadIdsByUserId.get(userId) ?? []
+    return threadIds
+      .map((threadId) => this.state.directThreadsById.get(threadId))
+      .filter((thread): thread is DirectThread => !!thread)
+      .map(cloneDirectThread)
+      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
+  }
+
+  async getDirectThreadById(threadId: string): Promise<DirectThread | null> {
+    const thread = this.state.directThreadsById.get(threadId)
+    return thread ? cloneDirectThread(thread) : null
+  }
+
+  async getDirectThreadByChannelId(channelId: string): Promise<DirectThread | null> {
+    const threadId = this.state.directThreadIdByChannelId.get(channelId)
+    if (!threadId) {
+      return null
+    }
+
+    return await this.getDirectThreadById(threadId)
+  }
+
+  async isDirectThreadParticipant(threadId: string, userId: string): Promise<boolean> {
+    const thread = this.state.directThreadsById.get(threadId)
+    if (!thread) {
+      return false
+    }
+    return thread.participantIds.includes(userId)
   }
 
   async createServer(name: string, ownerId: string): Promise<Server> {
@@ -229,6 +483,10 @@ export class MemoryStore implements AppStore {
 
   async listServersForUser(userId: string): Promise<Server[]> {
     return Array.from(this.state.serversById.values()).filter((server) => {
+      if (this.state.hiddenServerIds.has(server.id)) {
+        return false
+      }
+
       const members = this.state.membersByServerId.get(server.id)
       return members ? members.has(userId) : false
     })
@@ -367,12 +625,17 @@ export class MemoryStore implements AppStore {
     })
   }
 
-  async createMessage(channelId: string, authorId: string, body: string): Promise<Message> {
+  async createMessage(channelId: string, authorId: string, body: string, attachments: Attachment[] = []): Promise<Message> {
+    const directThreadId = this.state.directThreadIdByChannelId.get(channelId) ?? null
+
     const message: Message = {
       id: createId("msg"),
       channelId,
+      conversationId: directThreadId ?? channelId,
+      directThreadId,
       authorId,
       body,
+      attachments: attachments.map(cloneAttachment),
       createdAt: new Date().toISOString(),
       updatedAt: null,
       reactions: []
@@ -430,7 +693,9 @@ export class MemoryStore implements AppStore {
 
     return {
       id: messageId,
-      channelId: message.channelId
+      channelId: message.channelId,
+      conversationId: message.conversationId,
+      directThreadId: message.directThreadId
     }
   }
 
@@ -480,6 +745,27 @@ export class MemoryStore implements AppStore {
 
   async listMessageReactions(messageId: string): Promise<MessageReactionSummary[]> {
     return summarizeReactions(this.state.reactionUsersByMessageId.get(messageId))
+  }
+
+  async getReadMarker(conversationId: string, userId: string): Promise<ReadMarker | null> {
+    const marker = this.state.readMarkersByConversationUser.get(conversationReadMarkerKey(conversationId, userId))
+    return marker ? { ...marker } : null
+  }
+
+  async upsertReadMarker(
+    conversationId: string,
+    userId: string,
+    lastReadMessageId: string | null
+  ): Promise<ReadMarker> {
+    const marker: ReadMarker = {
+      conversationId,
+      userId,
+      lastReadMessageId,
+      updatedAt: new Date().toISOString()
+    }
+
+    this.state.readMarkersByConversationUser.set(conversationReadMarkerKey(conversationId, userId), marker)
+    return { ...marker }
   }
 
   async listRoles(serverId: string): Promise<Role[]> {

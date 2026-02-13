@@ -2,10 +2,12 @@ import {
   communityServiceUrl,
   corsOrigin,
   identityServiceUrl,
+  mediaServiceUrl,
   messagingServiceUrl,
   port,
   preferCommunityServiceProxy,
   preferIdentityServiceProxy,
+  preferMediaServiceProxy,
   preferMessagingServiceProxy,
   service
 } from "./config"
@@ -51,4 +53,7 @@ if (preferCommunityServiceProxy) {
 }
 if (preferMessagingServiceProxy) {
   console.log(`${service} messaging proxy enabled -> ${messagingServiceUrl}`)
+}
+if (preferMediaServiceProxy) {
+  console.log(`${service} media proxy enabled -> ${mediaServiceUrl}`)
 }

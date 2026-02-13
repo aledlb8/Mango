@@ -10,3 +10,5 @@ export const communityServiceUrl = process.env.COMMUNITY_SERVICE_URL ?? "http://
 export const preferCommunityServiceProxy = process.env.PREFER_COMMUNITY_SERVICE_PROXY !== "false"
 export const messagingServiceUrl = process.env.MESSAGING_SERVICE_URL ?? "http://localhost:3004"
 export const preferMessagingServiceProxy = process.env.PREFER_MESSAGING_SERVICE_PROXY !== "false"
+export const mediaServiceUrl = process.env.MEDIA_SERVICE_URL ?? "http://localhost:3005"
+export const preferMediaServiceProxy = process.env.PREFER_MEDIA_SERVICE_PROXY !== "false"

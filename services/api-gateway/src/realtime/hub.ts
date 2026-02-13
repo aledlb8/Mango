@@ -1,4 +1,10 @@
-import type { Message, MessageDeletedEvent, MessageReactionSummary } from "@mango/contracts"
+import type {
+  DirectThread,
+  Message,
+  MessageDeletedEvent,
+  MessageReactionSummary,
+  TypingIndicator
+} from "@mango/contracts"
 import type { ServerWebSocket } from "bun"
 
 export type SocketData = {
@@ -11,94 +17,166 @@ function stringify(payload: unknown): string {
 }
 
 export class RealtimeHub {
-  private readonly channelSockets = new Map<string, Set<ServerWebSocket<SocketData>>>()
+  private readonly conversationSockets = new Map<string, Set<ServerWebSocket<SocketData>>>()
+  private readonly userSockets = new Map<string, Set<ServerWebSocket<SocketData>>>()
 
-  addSubscription(ws: ServerWebSocket<SocketData>, channelId: string): void {
-    let sockets = this.channelSockets.get(channelId)
+  registerSocket(ws: ServerWebSocket<SocketData>): void {
+    let sockets = this.userSockets.get(ws.data.userId)
     if (!sockets) {
       sockets = new Set<ServerWebSocket<SocketData>>()
-      this.channelSockets.set(channelId, sockets)
+      this.userSockets.set(ws.data.userId, sockets)
     }
 
     sockets.add(ws)
-    ws.data.subscriptions.add(channelId)
-    ws.send(stringify({ type: "subscribed", channelId }))
   }
 
-  removeSubscription(ws: ServerWebSocket<SocketData>, channelId: string): void {
-    const sockets = this.channelSockets.get(channelId)
+  addSubscription(ws: ServerWebSocket<SocketData>, conversationId: string): void {
+    let sockets = this.conversationSockets.get(conversationId)
+    if (!sockets) {
+      sockets = new Set<ServerWebSocket<SocketData>>()
+      this.conversationSockets.set(conversationId, sockets)
+    }
+
+    sockets.add(ws)
+    ws.data.subscriptions.add(conversationId)
+    ws.send(stringify({ type: "subscribed", channelId: conversationId }))
+  }
+
+  removeSubscription(ws: ServerWebSocket<SocketData>, conversationId: string): void {
+    const sockets = this.conversationSockets.get(conversationId)
     if (sockets) {
       sockets.delete(ws)
       if (sockets.size === 0) {
-        this.channelSockets.delete(channelId)
+        this.conversationSockets.delete(conversationId)
       }
     }
 
-    ws.data.subscriptions.delete(channelId)
-    ws.send(stringify({ type: "unsubscribed", channelId }))
+    ws.data.subscriptions.delete(conversationId)
+    ws.send(stringify({ type: "unsubscribed", channelId: conversationId }))
   }
 
   removeSocket(ws: ServerWebSocket<SocketData>): void {
-    for (const channelId of ws.data.subscriptions) {
-      const sockets = this.channelSockets.get(channelId)
+    for (const conversationId of ws.data.subscriptions) {
+      const sockets = this.conversationSockets.get(conversationId)
       if (!sockets) {
         continue
       }
 
       sockets.delete(ws)
       if (sockets.size === 0) {
-        this.channelSockets.delete(channelId)
+        this.conversationSockets.delete(conversationId)
       }
     }
 
     ws.data.subscriptions.clear()
+
+    const userSockets = this.userSockets.get(ws.data.userId)
+    if (!userSockets) {
+      return
+    }
+
+    userSockets.delete(ws)
+    if (userSockets.size === 0) {
+      this.userSockets.delete(ws.data.userId)
+    }
   }
 
-  private publishToChannel(channelId: string, payload: unknown): void {
-    const sockets = this.channelSockets.get(channelId)
-    if (!sockets || sockets.size === 0) {
+  private collectSockets(
+    conversationId: string,
+    recipientUserIds: string[] = []
+  ): Set<ServerWebSocket<SocketData>> {
+    const targets = new Set<ServerWebSocket<SocketData>>()
+
+    const subscribedSockets = this.conversationSockets.get(conversationId)
+    if (subscribedSockets) {
+      for (const socket of subscribedSockets) {
+        targets.add(socket)
+      }
+    }
+
+    for (const userId of recipientUserIds) {
+      const userSockets = this.userSockets.get(userId)
+      if (!userSockets) {
+        continue
+      }
+
+      for (const socket of userSockets) {
+        targets.add(socket)
+      }
+    }
+
+    return targets
+  }
+
+  private publishToTargets(
+    conversationId: string,
+    payload: unknown,
+    recipientUserIds: string[] = []
+  ): void {
+    const targets = this.collectSockets(conversationId, recipientUserIds)
+    if (targets.size === 0) {
       return
     }
 
     const encoded = stringify(payload)
-    for (const socket of sockets) {
+    for (const socket of targets) {
       socket.send(encoded)
     }
   }
 
-  publishMessageCreated(message: Message): void {
-    this.publishToChannel(message.channelId, {
+  publishMessageCreated(message: Message, recipientUserIds: string[] = []): void {
+    this.publishToTargets(message.conversationId, {
       type: "message.created",
       payload: message
-    })
+    }, recipientUserIds)
+  }
+
+  publishDirectThreadCreated(thread: DirectThread): void {
+    this.publishToTargets(
+      thread.id,
+      {
+        type: "direct-thread.created",
+        payload: thread
+      },
+      thread.participantIds
+    )
   }
 
   publishMessageUpdated(message: Message): void {
-    this.publishToChannel(message.channelId, {
+    this.publishToTargets(message.conversationId, {
       type: "message.updated",
       payload: message
     })
   }
 
   publishMessageDeleted(payload: MessageDeletedEvent): void {
-    this.publishToChannel(payload.channelId, {
+    this.publishToTargets(payload.conversationId, {
       type: "message.deleted",
       payload
     })
   }
 
   publishReactionUpdated(
-    channelId: string,
+    conversationId: string,
+    directThreadId: string | null,
     messageId: string,
     reactions: MessageReactionSummary[]
   ): void {
-    this.publishToChannel(channelId, {
+    this.publishToTargets(conversationId, {
       type: "reaction.updated",
       payload: {
-        channelId,
+        conversationId,
+        directThreadId,
         messageId,
         reactions
       }
+    })
+  }
+
+  publishTypingUpdated(conversationId: string, payload: TypingIndicator): void {
+    this.publishToTargets(conversationId, {
+      type: "typing.updated",
+      payload
     })
   }
 }

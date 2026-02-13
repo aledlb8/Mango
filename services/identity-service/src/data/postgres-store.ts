@@ -1,5 +1,5 @@
 import { SQL } from "bun"
-import type { User } from "@mango/contracts"
+import type { FriendRequest, User } from "@mango/contracts"
 import { createId } from "../id"
 import type { IdentityStore, StoredUser } from "./store"
 
@@ -18,6 +18,15 @@ type PublicUserRow = {
   username: string
   display_name: string
   created_at: string | Date
+}
+
+type FriendRequestRow = {
+  id: string
+  from_user_id: string
+  to_user_id: string
+  status: "pending" | "accepted" | "rejected"
+  created_at: string | Date
+  responded_at: string | Date | null
 }
 
 function toIso(value: string | Date): string {
@@ -42,6 +51,17 @@ function mapPublicUser(row: PublicUserRow): User {
     username: row.username,
     displayName: row.display_name,
     createdAt: toIso(row.created_at)
+  }
+}
+
+function mapFriendRequest(row: FriendRequestRow): FriendRequest {
+  return {
+    id: row.id,
+    fromUserId: row.from_user_id,
+    toUserId: row.to_user_id,
+    status: row.status,
+    createdAt: toIso(row.created_at),
+    respondedAt: row.responded_at ? toIso(row.responded_at) : null
   }
 }
 
@@ -78,6 +98,28 @@ async function ensureSchema(sql: SQL): Promise<void> {
       PRIMARY KEY (user_id, friend_id),
       CHECK (user_id <> friend_id)
     )
+  `
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS friend_requests (
+      id TEXT PRIMARY KEY,
+      from_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      to_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'rejected')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      responded_at TIMESTAMPTZ,
+      CHECK (from_user_id <> to_user_id)
+    )
+  `
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_friend_requests_from_user_id
+    ON friend_requests (from_user_id)
+  `
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_friend_requests_to_user_id
+    ON friend_requests (to_user_id)
   `
 }
 
@@ -208,5 +250,118 @@ export class PostgresStore implements IdentityStore {
       ORDER BY f.created_at ASC
     `
     return rows.map(mapPublicUser)
+  }
+
+  async createFriendRequest(fromUserId: string, toUserId: string): Promise<FriendRequest> {
+    const existingFriendship = await this.sql<{ exists: boolean }[]>`
+      SELECT EXISTS (
+        SELECT 1
+        FROM friendships
+        WHERE user_id = ${fromUserId}
+          AND friend_id = ${toUserId}
+      ) AS exists
+    `
+
+    if (existingFriendship[0]?.exists) {
+      throw new Error("Users are already friends.")
+    }
+
+    const existingPending = await this.sql<FriendRequestRow[]>`
+      SELECT id, from_user_id, to_user_id, status, created_at, responded_at
+      FROM friend_requests
+      WHERE status = 'pending'
+        AND (
+          (from_user_id = ${fromUserId} AND to_user_id = ${toUserId})
+          OR
+          (from_user_id = ${toUserId} AND to_user_id = ${fromUserId})
+        )
+      ORDER BY created_at DESC
+      LIMIT 1
+    `
+
+    if (existingPending[0]) {
+      return mapFriendRequest(existingPending[0])
+    }
+
+    const id = createId("frq")
+    const createdAt = new Date().toISOString()
+    const rows = await this.sql<FriendRequestRow[]>`
+      INSERT INTO friend_requests (
+        id, from_user_id, to_user_id, status, created_at, responded_at
+      )
+      VALUES (${id}, ${fromUserId}, ${toUserId}, 'pending', ${createdAt}, NULL)
+      RETURNING id, from_user_id, to_user_id, status, created_at, responded_at
+    `
+
+    return mapFriendRequest(rows[0])
+  }
+
+  async listFriendRequests(userId: string): Promise<FriendRequest[]> {
+    const rows = await this.sql<FriendRequestRow[]>`
+      SELECT id, from_user_id, to_user_id, status, created_at, responded_at
+      FROM friend_requests
+      WHERE status = 'pending'
+        AND (from_user_id = ${userId} OR to_user_id = ${userId})
+      ORDER BY created_at DESC
+    `
+
+    return rows.map(mapFriendRequest)
+  }
+
+  async respondFriendRequest(
+    requestId: string,
+    responderUserId: string,
+    action: "accept" | "reject"
+  ): Promise<FriendRequest | null> {
+    const requestRows = await this.sql<FriendRequestRow[]>`
+      SELECT id, from_user_id, to_user_id, status, created_at, responded_at
+      FROM friend_requests
+      WHERE id = ${requestId}
+      LIMIT 1
+    `
+
+    const request = requestRows[0]
+    if (!request || request.status !== "pending") {
+      return null
+    }
+
+    if (request.to_user_id !== responderUserId) {
+      return null
+    }
+
+    const nextStatus = action === "accept" ? "accepted" : "rejected"
+    const respondedAt = new Date().toISOString()
+
+    const updated = await this.sql.begin(async (tx) => {
+      const rows = await tx<FriendRequestRow[]>`
+        UPDATE friend_requests
+        SET status = ${nextStatus}, responded_at = ${respondedAt}
+        WHERE id = ${request.id}
+          AND status = 'pending'
+        RETURNING id, from_user_id, to_user_id, status, created_at, responded_at
+      `
+
+      const updatedRequest = rows[0]
+      if (!updatedRequest) {
+        return null
+      }
+
+      if (nextStatus === "accepted") {
+        await tx`
+          INSERT INTO friendships (user_id, friend_id)
+          VALUES (${updatedRequest.from_user_id}, ${updatedRequest.to_user_id})
+          ON CONFLICT (user_id, friend_id) DO NOTHING
+        `
+        await tx`
+          INSERT INTO friendships (user_id, friend_id)
+          VALUES (${updatedRequest.to_user_id}, ${updatedRequest.from_user_id})
+          ON CONFLICT (user_id, friend_id) DO NOTHING
+        `
+      }
+
+      return updatedRequest
+    })
+
+    return updated ? mapFriendRequest(updated) : null
   }
 }

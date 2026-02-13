@@ -1,4 +1,4 @@
-import type { Message, MessageReactionSummary } from "./api"
+import type { DirectThread, Message, MessageReactionSummary, TypingIndicator } from "./api"
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001"
 const WS_BASE =
@@ -24,6 +24,10 @@ export type RealtimeServerMessage =
       payload: Message
     }
   | {
+      type: "direct-thread.created"
+      payload: DirectThread
+    }
+  | {
       type: "message.updated"
       payload: Message
     }
@@ -32,15 +36,22 @@ export type RealtimeServerMessage =
       payload: {
         id: string
         channelId: string
+        conversationId: string
+        directThreadId: string | null
       }
     }
   | {
       type: "reaction.updated"
       payload: {
-        channelId: string
+        conversationId: string
+        directThreadId: string | null
         messageId: string
         reactions: MessageReactionSummary[]
       }
+    }
+  | {
+      type: "typing.updated"
+      payload: TypingIndicator
     }
   | {
       type: "pong"

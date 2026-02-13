@@ -52,30 +52,40 @@ async function handleClientMessage(
     return
   }
 
-  if (!("channelId" in parsed) || !parsed.channelId) {
-    ws.send(encode({ type: "error", error: "channelId is required." }))
+  const conversationId = parsed.conversationId ?? parsed.channelId
+  if (!conversationId) {
+    ws.send(encode({ type: "error", error: "conversationId is required." }))
     return
   }
 
-  const channel = await ctx.store.getChannelById(parsed.channelId)
-  if (!channel) {
-    ws.send(encode({ type: "error", error: "Channel not found." }))
-    return
-  }
+  const channel = await ctx.store.getChannelById(conversationId)
+  if (channel) {
+    const canRead = await ctx.store.hasChannelPermission(channel.id, ws.data.userId, "read_messages")
+    if (!canRead) {
+      ws.send(encode({ type: "error", error: "Not authorized for this channel." }))
+      return
+    }
+  } else {
+    const directThread = await ctx.store.getDirectThreadById(conversationId)
+    if (!directThread) {
+      ws.send(encode({ type: "error", error: "Conversation not found." }))
+      return
+    }
 
-  const canRead = await ctx.store.hasChannelPermission(channel.id, ws.data.userId, "read_messages")
-  if (!canRead) {
-    ws.send(encode({ type: "error", error: "Not authorized for this channel." }))
-    return
+    const isParticipant = await ctx.store.isDirectThreadParticipant(directThread.id, ws.data.userId)
+    if (!isParticipant) {
+      ws.send(encode({ type: "error", error: "Not authorized for this direct thread." }))
+      return
+    }
   }
 
   if (parsed.type === "subscribe") {
-    ctx.realtimeHub.addSubscription(ws, parsed.channelId)
+    ctx.realtimeHub.addSubscription(ws, conversationId)
     return
   }
 
   if (parsed.type === "unsubscribe") {
-    ctx.realtimeHub.removeSubscription(ws, parsed.channelId)
+    ctx.realtimeHub.removeSubscription(ws, conversationId)
   }
 }
 
@@ -111,6 +121,7 @@ export async function tryUpgradeToWebSocket(
 export function createWebSocketHandlers(ctx: RouteContext): WebSocketHandler<SocketData> {
   return {
     open(ws) {
+      ctx.realtimeHub.registerSocket(ws)
       ws.send(
         encode({
           type: "ready",

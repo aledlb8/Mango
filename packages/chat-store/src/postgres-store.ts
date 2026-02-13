@@ -1,11 +1,15 @@
 import { SQL } from "bun"
 import type {
+  Attachment,
   Channel,
   ChannelPermissionOverwrite,
+  DirectThread,
+  FriendRequest,
   Message,
   MessageDeletedEvent,
   MessageReactionSummary,
   Permission,
+  ReadMarker,
   Role,
   ServerInvite,
   Server,
@@ -38,6 +42,15 @@ type PublicUserRow = {
   created_at: string | Date
 }
 
+type FriendRequestRow = {
+  id: string
+  from_user_id: string
+  to_user_id: string
+  status: "pending" | "accepted" | "rejected"
+  created_at: string | Date
+  responded_at: string | Date | null
+}
+
 type ServerRow = {
   id: string
   name: string
@@ -50,6 +63,7 @@ type ChannelRow = {
   server_id: string
   name: string
   channel_type: "text"
+  is_direct_thread_backing?: boolean
   created_at: string | Date
 }
 
@@ -60,6 +74,21 @@ type MessageRow = {
   body: string
   created_at: string | Date
   updated_at: string | Date | null
+}
+
+type MessageWithThreadRow = MessageRow & {
+  direct_thread_id: string | null
+}
+
+type AttachmentRow = {
+  id: string
+  message_id: string
+  file_name: string
+  content_type: string
+  size_bytes: number | string
+  url: string
+  uploaded_by: string
+  created_at: string | Date
 }
 
 type MessageReactionRow = {
@@ -96,8 +125,39 @@ type InviteRow = {
   uses: number
 }
 
+type DirectThreadRow = {
+  id: string
+  channel_id: string
+  thread_type: "dm" | "group"
+  owner_id: string
+  title: string
+  created_at: string | Date
+  updated_at: string | Date
+}
+
+type DirectThreadParticipantRow = {
+  thread_id: string
+  user_id: string
+}
+
+type ReadMarkerRow = {
+  conversation_id: string
+  user_id: string
+  last_read_message_id: string | null
+  updated_at: string | Date
+}
+
 function toIso(value: string | Date): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString()
+}
+
+function toPgTextArrayLiteral(values: string[]): string {
+  const escaped = values.map((value) => {
+    const normalized = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+    return `"${normalized}"`
+  })
+
+  return `{${escaped.join(",")}}`
 }
 
 function parsePermissions(value: unknown): Permission[] {
@@ -147,12 +207,32 @@ function mapChannel(row: ChannelRow): Channel {
   }
 }
 
-function mapMessage(row: MessageRow, reactions: MessageReactionSummary[]): Message {
+function mapAttachment(row: AttachmentRow): Attachment {
+  return {
+    id: row.id,
+    fileName: row.file_name,
+    contentType: row.content_type,
+    sizeBytes: Number(row.size_bytes),
+    url: row.url,
+    uploadedBy: row.uploaded_by,
+    createdAt: toIso(row.created_at)
+  }
+}
+
+function mapMessage(
+  row: MessageWithThreadRow,
+  reactions: MessageReactionSummary[],
+  attachments: Attachment[]
+): Message {
+  const directThreadId = row.direct_thread_id ?? null
   return {
     id: row.id,
     channelId: row.channel_id,
+    conversationId: directThreadId ?? row.channel_id,
+    directThreadId,
     authorId: row.author_id,
     body: row.body,
+    attachments,
     createdAt: toIso(row.created_at),
     updatedAt: row.updated_at ? toIso(row.updated_at) : null,
     reactions
@@ -169,6 +249,17 @@ function mapPublicUser(row: PublicUserRow): User {
   }
 }
 
+function mapFriendRequest(row: FriendRequestRow): FriendRequest {
+  return {
+    id: row.id,
+    fromUserId: row.from_user_id,
+    toUserId: row.to_user_id,
+    status: row.status,
+    createdAt: toIso(row.created_at),
+    respondedAt: row.responded_at ? toIso(row.responded_at) : null
+  }
+}
+
 function mapInvite(row: InviteRow): ServerInvite {
   return {
     code: row.code,
@@ -178,6 +269,15 @@ function mapInvite(row: InviteRow): ServerInvite {
     expiresAt: row.expires_at ? toIso(row.expires_at) : null,
     maxUses: row.max_uses,
     uses: row.uses
+  }
+}
+
+function mapReadMarker(row: ReadMarkerRow): ReadMarker {
+  return {
+    conversationId: row.conversation_id,
+    userId: row.user_id,
+    lastReadMessageId: row.last_read_message_id,
+    updatedAt: toIso(row.updated_at)
   }
 }
 
@@ -201,6 +301,22 @@ function mapOverwrite(row: OverwriteRow): ChannelPermissionOverwrite {
     allowPermissions: parsePermissions(row.allow_permissions),
     denyPermissions: parsePermissions(row.deny_permissions),
     createdAt: toIso(row.created_at)
+  }
+}
+
+function mapDirectThread(
+  row: DirectThreadRow,
+  participantIds: string[]
+): DirectThread {
+  return {
+    id: row.id,
+    channelId: row.channel_id,
+    kind: row.thread_type,
+    ownerId: row.owner_id,
+    title: row.title,
+    participantIds,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at)
   }
 }
 
@@ -309,6 +425,123 @@ export class PostgresStore implements AppStore {
     return rows.map(mapPublicUser)
   }
 
+  async createFriendRequest(fromUserId: string, toUserId: string): Promise<FriendRequest> {
+    if (fromUserId === toUserId) {
+      throw new Error("You cannot send a friend request to yourself.")
+    }
+
+    const existingFriendship = await this.sql<{ exists: boolean }[]>`
+      SELECT EXISTS (
+        SELECT 1
+        FROM friendships
+        WHERE user_id = ${fromUserId}
+          AND friend_id = ${toUserId}
+      ) AS exists
+    `
+
+    if (existingFriendship[0]?.exists) {
+      throw new Error("Users are already friends.")
+    }
+
+    const existingPending = await this.sql<FriendRequestRow[]>`
+      SELECT id, from_user_id, to_user_id, status, created_at, responded_at
+      FROM friend_requests
+      WHERE status = 'pending'
+        AND (
+          (from_user_id = ${fromUserId} AND to_user_id = ${toUserId})
+          OR
+          (from_user_id = ${toUserId} AND to_user_id = ${fromUserId})
+        )
+      ORDER BY created_at DESC
+      LIMIT 1
+    `
+
+    if (existingPending[0]) {
+      return mapFriendRequest(existingPending[0])
+    }
+
+    const id = createId("frq")
+    const createdAt = new Date().toISOString()
+    const rows = await this.sql<FriendRequestRow[]>`
+      INSERT INTO friend_requests (
+        id, from_user_id, to_user_id, status, created_at, responded_at
+      )
+      VALUES (${id}, ${fromUserId}, ${toUserId}, 'pending', ${createdAt}, NULL)
+      RETURNING id, from_user_id, to_user_id, status, created_at, responded_at
+    `
+
+    return mapFriendRequest(rows[0])
+  }
+
+  async listFriendRequests(userId: string): Promise<FriendRequest[]> {
+    const rows = await this.sql<FriendRequestRow[]>`
+      SELECT id, from_user_id, to_user_id, status, created_at, responded_at
+      FROM friend_requests
+      WHERE status = 'pending'
+        AND (from_user_id = ${userId} OR to_user_id = ${userId})
+      ORDER BY created_at DESC
+    `
+
+    return rows.map(mapFriendRequest)
+  }
+
+  async respondFriendRequest(
+    requestId: string,
+    responderUserId: string,
+    action: "accept" | "reject"
+  ): Promise<FriendRequest | null> {
+    const requestRows = await this.sql<FriendRequestRow[]>`
+      SELECT id, from_user_id, to_user_id, status, created_at, responded_at
+      FROM friend_requests
+      WHERE id = ${requestId}
+      LIMIT 1
+    `
+
+    const request = requestRows[0]
+    if (!request || request.status !== "pending") {
+      return null
+    }
+
+    if (request.to_user_id !== responderUserId) {
+      return null
+    }
+
+    const nextStatus = action === "accept" ? "accepted" : "rejected"
+    const respondedAt = new Date().toISOString()
+
+    const updated = await this.sql.begin(async (tx) => {
+      const rows = await tx<FriendRequestRow[]>`
+        UPDATE friend_requests
+        SET status = ${nextStatus}, responded_at = ${respondedAt}
+        WHERE id = ${request.id}
+          AND status = 'pending'
+        RETURNING id, from_user_id, to_user_id, status, created_at, responded_at
+      `
+
+      const updatedRequest = rows[0]
+      if (!updatedRequest) {
+        return null
+      }
+
+      if (nextStatus === "accepted") {
+        await tx`
+          INSERT INTO friendships (user_id, friend_id)
+          VALUES (${updatedRequest.from_user_id}, ${updatedRequest.to_user_id})
+          ON CONFLICT (user_id, friend_id) DO NOTHING
+        `
+        await tx`
+          INSERT INTO friendships (user_id, friend_id)
+          VALUES (${updatedRequest.to_user_id}, ${updatedRequest.from_user_id})
+          ON CONFLICT (user_id, friend_id) DO NOTHING
+        `
+      }
+
+      return updatedRequest
+    })
+
+    return updated ? mapFriendRequest(updated) : null
+  }
+
   async createSession(token: string, userId: string): Promise<void> {
     const createdAt = new Date().toISOString()
     await this.sql`
@@ -328,6 +561,181 @@ export class PostgresStore implements AppStore {
     return rows[0]?.user_id ?? null
   }
 
+  async createDirectThread(ownerId: string, participantIds: string[], title: string): Promise<DirectThread> {
+    const uniqueParticipantIds = Array.from(new Set([ownerId, ...participantIds]))
+    if (uniqueParticipantIds.length < 2) {
+      throw new Error("Direct threads require at least two users.")
+    }
+
+    const resolvedParticipantIds: string[] = []
+    for (const participantId of uniqueParticipantIds) {
+      const user = await this.findUserById(participantId)
+      if (user) {
+        resolvedParticipantIds.push(participantId)
+      }
+    }
+
+    if (resolvedParticipantIds.length < 2) {
+      throw new Error("Direct threads require at least two existing users.")
+    }
+
+    const kind: DirectThread["kind"] = resolvedParticipantIds.length === 2 ? "dm" : "group"
+    const dmKey = kind === "dm" ? resolvedParticipantIds.sort((a, b) => a.localeCompare(b)).join(":") : null
+
+    if (dmKey) {
+      const existing = await this.getDirectThreadByDmKey(dmKey)
+      if (existing) {
+        return existing
+      }
+    }
+
+    const threadId = createId("thr")
+    const serverId = createId("srv")
+    const channelId = createId("chn")
+    const everyoneRoleId = createId("rol")
+    const ownerRoleId = createId("rol")
+    const createdAt = new Date().toISOString()
+    const normalizedTitle = title.trim()
+
+    await this.sql.begin(async (tx) => {
+      await tx`
+        INSERT INTO servers (id, name, owner_id, is_direct_thread_backing, created_at)
+        VALUES (${serverId}, 'direct-thread-backing', ${ownerId}, TRUE, ${createdAt})
+      `
+
+      await tx`
+        INSERT INTO roles (id, server_id, name, permissions, is_default, created_at)
+        VALUES (${everyoneRoleId}, ${serverId}, '@everyone', ${JSON.stringify(DEFAULT_MEMBER_PERMISSIONS)}, true, ${createdAt})
+      `
+
+      await tx`
+        INSERT INTO roles (id, server_id, name, permissions, is_default, created_at)
+        VALUES (${ownerRoleId}, ${serverId}, 'Owner', ${JSON.stringify(OWNER_ROLE_PERMISSIONS)}, false, ${createdAt})
+      `
+
+      await tx`
+        INSERT INTO channels (id, server_id, name, channel_type, is_direct_thread_backing, created_at)
+        VALUES (${channelId}, ${serverId}, 'direct', 'text', TRUE, ${createdAt})
+      `
+
+      await tx`
+        INSERT INTO direct_threads (
+          id, channel_id, server_id, thread_type, owner_id, title, dm_key, created_at, updated_at
+        )
+        VALUES (
+          ${threadId},
+          ${channelId},
+          ${serverId},
+          ${kind},
+          ${ownerId},
+          ${normalizedTitle || (kind === "dm" ? "Direct Message" : "Group Chat")},
+          ${dmKey},
+          ${createdAt},
+          ${createdAt}
+        )
+      `
+
+      for (const participantId of resolvedParticipantIds) {
+        await tx`
+          INSERT INTO server_members (server_id, user_id)
+          VALUES (${serverId}, ${participantId})
+          ON CONFLICT (server_id, user_id) DO NOTHING
+        `
+
+        await tx`
+          INSERT INTO member_roles (server_id, user_id, role_id)
+          VALUES (${serverId}, ${participantId}, ${everyoneRoleId})
+          ON CONFLICT (server_id, user_id, role_id) DO NOTHING
+        `
+
+        if (participantId === ownerId) {
+          await tx`
+            INSERT INTO member_roles (server_id, user_id, role_id)
+            VALUES (${serverId}, ${participantId}, ${ownerRoleId})
+            ON CONFLICT (server_id, user_id, role_id) DO NOTHING
+          `
+        }
+
+        await tx`
+          INSERT INTO direct_thread_participants (thread_id, user_id, joined_at)
+          VALUES (${threadId}, ${participantId}, ${createdAt})
+          ON CONFLICT (thread_id, user_id) DO NOTHING
+        `
+      }
+    })
+
+    const thread = await this.getDirectThreadById(threadId)
+    if (!thread) {
+      throw new Error("Failed to create direct thread.")
+    }
+
+    return thread
+  }
+
+  async listDirectThreadsForUser(userId: string): Promise<DirectThread[]> {
+    const rows = await this.sql<DirectThreadRow[]>`
+      SELECT dt.id, dt.channel_id, dt.thread_type, dt.owner_id, dt.title, dt.created_at, dt.updated_at
+      FROM direct_threads dt
+      INNER JOIN direct_thread_participants dtp ON dtp.thread_id = dt.id
+      WHERE dtp.user_id = ${userId}
+      ORDER BY dt.updated_at DESC
+    `
+
+    if (rows.length === 0) {
+      return []
+    }
+
+    const participantIdsByThreadId = await this.listParticipantIdsByThreadIds(rows.map((row) => row.id))
+    return rows.map((row) => mapDirectThread(row, participantIdsByThreadId.get(row.id) ?? []))
+  }
+
+  async getDirectThreadById(threadId: string): Promise<DirectThread | null> {
+    const rows = await this.sql<DirectThreadRow[]>`
+      SELECT id, channel_id, thread_type, owner_id, title, created_at, updated_at
+      FROM direct_threads
+      WHERE id = ${threadId}
+      LIMIT 1
+    `
+
+    const row = rows[0]
+    if (!row) {
+      return null
+    }
+
+    const participantIds = await this.listParticipantIdsByThreadId(threadId)
+    return mapDirectThread(row, participantIds)
+  }
+
+  async getDirectThreadByChannelId(channelId: string): Promise<DirectThread | null> {
+    const rows = await this.sql<DirectThreadRow[]>`
+      SELECT id, channel_id, thread_type, owner_id, title, created_at, updated_at
+      FROM direct_threads
+      WHERE channel_id = ${channelId}
+      LIMIT 1
+    `
+
+    const row = rows[0]
+    if (!row) {
+      return null
+    }
+
+    const participantIds = await this.listParticipantIdsByThreadId(row.id)
+    return mapDirectThread(row, participantIds)
+  }
+
+  async isDirectThreadParticipant(threadId: string, userId: string): Promise<boolean> {
+    const rows = await this.sql<{ exists: boolean }[]>`
+      SELECT EXISTS (
+        SELECT 1
+        FROM direct_thread_participants
+        WHERE thread_id = ${threadId}
+          AND user_id = ${userId}
+      ) AS exists
+    `
+
+    return Boolean(rows[0]?.exists)
+  }
+
   async createServer(name: string, ownerId: string): Promise<Server> {
     const serverId = createId("srv")
     const createdAt = new Date().toISOString()
@@ -336,8 +744,8 @@ export class PostgresStore implements AppStore {
 
     await this.sql.begin(async (tx) => {
       await tx`
-        INSERT INTO servers (id, name, owner_id, created_at)
-        VALUES (${serverId}, ${name}, ${ownerId}, ${createdAt})
+        INSERT INTO servers (id, name, owner_id, is_direct_thread_backing, created_at)
+        VALUES (${serverId}, ${name}, ${ownerId}, FALSE, ${createdAt})
       `
       await tx`
         INSERT INTO server_members (server_id, user_id)
@@ -373,6 +781,7 @@ export class PostgresStore implements AppStore {
       FROM servers s
       INNER JOIN server_members sm ON sm.server_id = s.id
       WHERE sm.user_id = ${userId}
+        AND s.is_direct_thread_backing = FALSE
       ORDER BY s.created_at ASC
     `
     return rows.map(mapServer)
@@ -457,8 +866,8 @@ export class PostgresStore implements AppStore {
     const id = createId("chn")
     const createdAt = new Date().toISOString()
     await this.sql`
-      INSERT INTO channels (id, server_id, name, channel_type, created_at)
-      VALUES (${id}, ${serverId}, ${name}, 'text', ${createdAt})
+      INSERT INTO channels (id, server_id, name, channel_type, is_direct_thread_backing, created_at)
+      VALUES (${id}, ${serverId}, ${name}, 'text', FALSE, ${createdAt})
     `
     return {
       id,
@@ -474,6 +883,7 @@ export class PostgresStore implements AppStore {
       SELECT id, server_id, name, channel_type, created_at
       FROM channels
       WHERE server_id = ${serverId}
+        AND is_direct_thread_backing = FALSE
       ORDER BY created_at ASC
     `
     return rows.map(mapChannel)
@@ -530,40 +940,94 @@ export class PostgresStore implements AppStore {
     })
   }
 
-  async createMessage(channelId: string, authorId: string, body: string): Promise<Message> {
+  async createMessage(
+    channelId: string,
+    authorId: string,
+    body: string,
+    attachments: Attachment[] = []
+  ): Promise<Message> {
     const id = createId("msg")
     const createdAt = new Date().toISOString()
-    await this.sql`
-      INSERT INTO messages (id, channel_id, author_id, body, created_at)
-      VALUES (${id}, ${channelId}, ${authorId}, ${body}, ${createdAt})
-    `
-    return {
-      id,
-      channelId,
-      authorId,
-      body,
-      createdAt,
-      updatedAt: null,
-      reactions: []
+
+    await this.sql.begin(async (tx) => {
+      await tx`
+        INSERT INTO messages (id, channel_id, author_id, body, created_at)
+        VALUES (${id}, ${channelId}, ${authorId}, ${body}, ${createdAt})
+      `
+
+      for (const attachment of attachments) {
+        const attachmentId = attachment.id?.trim() || createId("att")
+        await tx`
+          INSERT INTO message_attachments (
+            id, message_id, file_name, content_type, size_bytes, url, uploaded_by, created_at
+          )
+          VALUES (
+            ${attachmentId},
+            ${id},
+            ${attachment.fileName},
+            ${attachment.contentType},
+            ${attachment.sizeBytes},
+            ${attachment.url},
+            ${attachment.uploadedBy || authorId},
+            ${attachment.createdAt || createdAt}
+          )
+        `
+      }
+    })
+
+    const message = await this.getMessageById(id)
+    if (!message) {
+      throw new Error("Failed to create message.")
     }
+
+    return message
   }
 
   async listMessages(channelId: string): Promise<Message[]> {
-    const rows = await this.sql<MessageRow[]>`
-      SELECT id, channel_id, author_id, body, created_at, updated_at
-      FROM messages
-      WHERE channel_id = ${channelId}
-      ORDER BY created_at ASC
+    const rows = await this.sql<MessageWithThreadRow[]>`
+      SELECT
+        m.id,
+        m.channel_id,
+        m.author_id,
+        m.body,
+        m.created_at,
+        m.updated_at,
+        dt.id AS direct_thread_id
+      FROM messages m
+      LEFT JOIN direct_threads dt ON dt.channel_id = m.channel_id
+      WHERE m.channel_id = ${channelId}
+      ORDER BY m.created_at ASC
     `
+
+    if (rows.length === 0) {
+      return []
+    }
+
     const reactionsByMessageId = await this.listReactionSummariesForChannel(channelId)
-    return rows.map((row) => mapMessage(row, reactionsByMessageId.get(row.id) ?? []))
+    const attachmentsByMessageId = await this.listAttachmentsForMessageIds(rows.map((row) => row.id))
+
+    return rows.map((row) =>
+      mapMessage(
+        row,
+        reactionsByMessageId.get(row.id) ?? [],
+        attachmentsByMessageId.get(row.id) ?? []
+      )
+    )
   }
 
   async getMessageById(messageId: string): Promise<Message | null> {
-    const rows = await this.sql<MessageRow[]>`
-      SELECT id, channel_id, author_id, body, created_at, updated_at
-      FROM messages
-      WHERE id = ${messageId}
+    const rows = await this.sql<MessageWithThreadRow[]>`
+      SELECT
+        m.id,
+        m.channel_id,
+        m.author_id,
+        m.body,
+        m.created_at,
+        m.updated_at,
+        dt.id AS direct_thread_id
+      FROM messages m
+      LEFT JOIN direct_threads dt ON dt.channel_id = m.channel_id
+      WHERE m.id = ${messageId}
       LIMIT 1
     `
 
@@ -573,16 +1037,19 @@ export class PostgresStore implements AppStore {
     }
 
     const reactions = await this.listMessageReactions(messageId)
-    return mapMessage(row, reactions)
+    const attachments = await this.listAttachmentsForMessage(messageId)
+    return mapMessage(row, reactions, attachments)
   }
 
   async updateMessage(messageId: string, body: string): Promise<Message | null> {
     const updatedAt = new Date().toISOString()
-    const rows = await this.sql<MessageRow[]>`
+    const rows = await this.sql<MessageWithThreadRow[]>`
       UPDATE messages
       SET body = ${body}, updated_at = ${updatedAt}
       WHERE id = ${messageId}
-      RETURNING id, channel_id, author_id, body, created_at, updated_at
+      RETURNING id, channel_id, author_id, body, created_at, updated_at, (
+        SELECT id FROM direct_threads WHERE channel_id = messages.channel_id LIMIT 1
+      ) AS direct_thread_id
     `
 
     const row = rows[0]
@@ -591,7 +1058,8 @@ export class PostgresStore implements AppStore {
     }
 
     const reactions = await this.listMessageReactions(messageId)
-    return mapMessage(row, reactions)
+    const attachments = await this.listAttachmentsForMessage(messageId)
+    return mapMessage(row, reactions, attachments)
   }
 
   async deleteMessage(messageId: string): Promise<MessageDeletedEvent | null> {
@@ -605,10 +1073,13 @@ export class PostgresStore implements AppStore {
     if (!row) {
       return null
     }
+    const directThread = await this.getDirectThreadByChannelId(row.channel_id)
 
     return {
       id: row.id,
-      channelId: row.channel_id
+      channelId: row.channel_id,
+      conversationId: directThread?.id ?? row.channel_id,
+      directThreadId: directThread?.id ?? null
     }
   }
 
@@ -648,6 +1119,37 @@ export class PostgresStore implements AppStore {
       emoji: row.emoji,
       count: Number(row.count)
     }))
+  }
+
+  async getReadMarker(conversationId: string, userId: string): Promise<ReadMarker | null> {
+    const rows = await this.sql<ReadMarkerRow[]>`
+      SELECT conversation_id, user_id, last_read_message_id, updated_at
+      FROM read_markers
+      WHERE conversation_id = ${conversationId}
+        AND user_id = ${userId}
+      LIMIT 1
+    `
+
+    return rows[0] ? mapReadMarker(rows[0]) : null
+  }
+
+  async upsertReadMarker(
+    conversationId: string,
+    userId: string,
+    lastReadMessageId: string | null
+  ): Promise<ReadMarker> {
+    const updatedAt = new Date().toISOString()
+    const rows = await this.sql<ReadMarkerRow[]>`
+      INSERT INTO read_markers (conversation_id, user_id, last_read_message_id, updated_at)
+      VALUES (${conversationId}, ${userId}, ${lastReadMessageId}, ${updatedAt})
+      ON CONFLICT (conversation_id, user_id)
+      DO UPDATE SET
+        last_read_message_id = EXCLUDED.last_read_message_id,
+        updated_at = EXCLUDED.updated_at
+      RETURNING conversation_id, user_id, last_read_message_id, updated_at
+    `
+
+    return mapReadMarker(rows[0])
   }
 
   async listRoles(serverId: string): Promise<Role[]> {
@@ -888,5 +1390,88 @@ export class PostgresStore implements AppStore {
     }
 
     return grouped
+  }
+
+  private async listAttachmentsForMessage(messageId: string): Promise<Attachment[]> {
+    const rows = await this.sql<AttachmentRow[]>`
+      SELECT id, message_id, file_name, content_type, size_bytes, url, uploaded_by, created_at
+      FROM message_attachments
+      WHERE message_id = ${messageId}
+      ORDER BY created_at ASC
+    `
+
+    return rows.map(mapAttachment)
+  }
+
+  private async listAttachmentsForMessageIds(messageIds: string[]): Promise<Map<string, Attachment[]>> {
+    const grouped = new Map<string, Attachment[]>()
+    if (messageIds.length === 0) {
+      return grouped
+    }
+
+    const rows = await this.sql<AttachmentRow[]>`
+      SELECT id, message_id, file_name, content_type, size_bytes, url, uploaded_by, created_at
+      FROM message_attachments
+      WHERE message_id = ANY(${toPgTextArrayLiteral(messageIds)}::text[])
+      ORDER BY created_at ASC
+    `
+
+    for (const row of rows) {
+      const attachments = grouped.get(row.message_id) ?? []
+      attachments.push(mapAttachment(row))
+      grouped.set(row.message_id, attachments)
+    }
+
+    return grouped
+  }
+
+  private async listParticipantIdsByThreadId(threadId: string): Promise<string[]> {
+    const rows = await this.sql<DirectThreadParticipantRow[]>`
+      SELECT thread_id, user_id
+      FROM direct_thread_participants
+      WHERE thread_id = ${threadId}
+      ORDER BY joined_at ASC
+    `
+
+    return rows.map((row) => row.user_id)
+  }
+
+  private async listParticipantIdsByThreadIds(threadIds: string[]): Promise<Map<string, string[]>> {
+    const grouped = new Map<string, string[]>()
+    if (threadIds.length === 0) {
+      return grouped
+    }
+
+    const rows = await this.sql<DirectThreadParticipantRow[]>`
+      SELECT thread_id, user_id
+      FROM direct_thread_participants
+      WHERE thread_id = ANY(${toPgTextArrayLiteral(threadIds)}::text[])
+      ORDER BY joined_at ASC
+    `
+
+    for (const row of rows) {
+      const participants = grouped.get(row.thread_id) ?? []
+      participants.push(row.user_id)
+      grouped.set(row.thread_id, participants)
+    }
+
+    return grouped
+  }
+
+  private async getDirectThreadByDmKey(dmKey: string): Promise<DirectThread | null> {
+    const rows = await this.sql<DirectThreadRow[]>`
+      SELECT id, channel_id, thread_type, owner_id, title, created_at, updated_at
+      FROM direct_threads
+      WHERE dm_key = ${dmKey}
+      LIMIT 1
+    `
+
+    const row = rows[0]
+    if (!row) {
+      return null
+    }
+
+    const participantIds = await this.listParticipantIdsByThreadId(row.id)
+    return mapDirectThread(row, participantIds)
   }
 }

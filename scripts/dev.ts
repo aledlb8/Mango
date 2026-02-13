@@ -1,10 +1,33 @@
 import { ensureTools, runCommand, startProcess } from "./utils";
+import { SQL } from "bun";
 
 type ProcSpec = {
   label: string;
   command: string[];
   cwd?: string;
 };
+
+const databaseUrl = process.env.DATABASE_URL ?? "postgres://mango:mango@localhost:5432/mango";
+
+async function waitForPostgresReady(): Promise<void> {
+  const maxAttempts = 30;
+  const delayMs = 1000;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const sql = new SQL(databaseUrl);
+      await sql`SELECT 1`;
+      console.log("[infra] postgres is ready");
+      return;
+    } catch {
+      if (attempt === maxAttempts) {
+        throw new Error("Postgres did not become ready in time. Check docker compose logs.");
+      }
+
+      await Bun.sleep(delayMs);
+    }
+  }
+}
 
 async function main() {
   ensureTools(["bun", "pnpm", "go"]);
@@ -18,6 +41,8 @@ async function main() {
     command: ["docker", "compose", "-f", "infra/docker-compose.yml", "up", "-d"],
     label: "infra"
   });
+
+  await waitForPostgresReady();
 
   const processSpecs: ProcSpec[] = [
     { label: "api-gateway", command: ["bun", "run", "dev"], cwd: "services/api-gateway" },

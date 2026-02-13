@@ -1,4 +1,4 @@
-import type { User } from "@mango/contracts"
+import type { FriendRequest, User } from "@mango/contracts"
 
 export type StoredUser = User & {
   passwordHash: string
@@ -19,4 +19,11 @@ export interface IdentityStore {
   searchUsers(query: string, excludeUserId: string): Promise<User[]>
   addFriend(userId: string, friendId: string): Promise<void>
   listFriends(userId: string): Promise<User[]>
+  createFriendRequest(fromUserId: string, toUserId: string): Promise<FriendRequest>
+  listFriendRequests(userId: string): Promise<FriendRequest[]>
+  respondFriendRequest(
+    requestId: string,
+    responderUserId: string,
+    action: "accept" | "reject"
+  ): Promise<FriendRequest | null>
 }

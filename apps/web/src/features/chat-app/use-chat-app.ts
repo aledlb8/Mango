@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import type { FormEvent } from "react"
 import {
-  addFriend,
   addReaction,
   createChannel,
+  createDirectThread,
+  createDirectThreadMessage,
   createMessage,
   createServer,
   createServerInvite,
@@ -14,61 +15,42 @@ import {
   getUserById,
   joinServerByInvite,
   listChannels,
+  listDirectThreadMessages,
+  listDirectThreads,
   listFriends,
+  listFriendRequests,
   listMessages,
   listServers,
   login,
   register,
+  respondFriendRequest,
   removeReaction,
+  sendFriendRequest,
   searchUsers,
+  sendChannelTyping,
+  sendDirectThreadTyping,
+  updateChannelReadMarker,
+  updateDirectThreadReadMarker,
   updateMessage,
+  uploadAttachment,
+  type Attachment,
   type Channel,
+  type DirectThread,
+  type FriendRequest,
   type Message,
   type Server,
   type User
 } from "@/lib/api"
 import { clearTokenCookie, getTokenFromCookie, setTokenCookie } from "@/lib/session-cookie"
 import { createRealtimeSocket, parseRealtimeServerMessage, type RealtimeStatus } from "@/lib/realtime"
-
-function encode(payload: unknown): string {
-  return JSON.stringify(payload)
-}
-
-function upsertServer(list: Server[], incoming: Server): Server[] {
-  const existing = list.find((item) => item.id === incoming.id)
-  if (existing) {
-    return list.map((item) => (item.id === incoming.id ? incoming : item))
-  }
-  return [...list, incoming]
-}
-
-function mergeUsersById(current: Record<string, User>, users: User[]): Record<string, User> {
-  const next = { ...current }
-  for (const user of users) {
-    next[user.id] = user
-  }
-  return next
-}
-
-function sortByCreatedAt(list: Message[]): Message[] {
-  return [...list].sort(
-    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-  )
-}
-
-function dedupeMessages(list: Message[]): Message[] {
-  const byId = new Map<string, Message>()
-  for (const message of list) {
-    byId.set(message.id, message)
-  }
-  return sortByCreatedAt(Array.from(byId.values()))
-}
-
-function upsertMessage(list: Message[], incoming: Message): Message[] {
-  const withoutExisting = list.filter((item) => item.id !== incoming.id)
-  withoutExisting.push(incoming)
-  return dedupeMessages(withoutExisting)
-}
+import {
+  dedupeMessages,
+  encodePayload,
+  mergeUsersById,
+  upsertDirectThread,
+  upsertMessage,
+  upsertServer
+} from "./state-utils"
 
 export function useChatApp() {
   const [token, setToken] = useState<string | null>(null)
@@ -76,14 +58,17 @@ export function useChatApp() {
 
   const [servers, setServers] = useState<Server[]>([])
   const [channels, setChannels] = useState<Channel[]>([])
+  const [directThreads, setDirectThreads] = useState<DirectThread[]>([])
   const [messages, setMessages] = useState<Message[]>([])
   const [usersById, setUsersById] = useState<Record<string, User>>({})
 
   const [friends, setFriends] = useState<User[]>([])
+  const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([])
   const [friendSearchResults, setFriendSearchResults] = useState<User[]>([])
 
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null)
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null)
+  const [selectedDirectThreadId, setSelectedDirectThreadId] = useState<string | null>(null)
 
   const [registerEmail, setRegisterEmail] = useState("")
   const [registerUsername, setRegisterUsername] = useState("")
@@ -97,6 +82,8 @@ export function useChatApp() {
   const [inviteCode, setInviteCode] = useState("")
   const [channelName, setChannelName] = useState("")
   const [messageBody, setMessageBody] = useState("")
+  const [pendingAttachments, setPendingAttachments] = useState<File[]>([])
+  const [typingUsersByConversation, setTypingUsersByConversation] = useState<Record<string, string[]>>({})
   const [friendSearchQuery, setFriendSearchQuery] = useState("")
 
   const [latestInviteCode, setLatestInviteCode] = useState<string | null>(null)
@@ -109,6 +96,13 @@ export function useChatApp() {
   const socketRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const activeChannelRef = useRef<string | null>(null)
+  const selectedServerRef = useRef<string | null>(null)
+  const selectedDirectThreadRef = useRef<string | null>(null)
+  const typingExpiryRef = useRef<Map<string, number>>(new Map<string, number>())
+  const typingDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const typingHeartbeatRef = useRef<number>(0)
+  const typingActiveRef = useRef<boolean>(false)
+  const lastReadMessageByConversationRef = useRef<Record<string, string | null>>({})
 
   const selectedServer = useMemo(
     () => servers.find((server) => server.id === selectedServerId) ?? null,
@@ -119,6 +113,31 @@ export function useChatApp() {
     () => channels.find((channel) => channel.id === selectedChannelId) ?? null,
     [channels, selectedChannelId]
   )
+
+  const selectedDirectThread = useMemo(
+    () => directThreads.find((thread) => thread.id === selectedDirectThreadId) ?? null,
+    [directThreads, selectedDirectThreadId]
+  )
+
+  const activeConversationId = useMemo(() => {
+    if (selectedServerId) {
+      return selectedChannelId
+    }
+
+    return selectedDirectThreadId
+  }, [selectedServerId, selectedChannelId, selectedDirectThreadId])
+
+  const typingUserLabels = useMemo(() => {
+    if (!activeConversationId || !me) {
+      return [] as string[]
+    }
+
+    return (typingUsersByConversation[activeConversationId] ?? [])
+      .filter((userId) => userId !== me.id)
+      .map((userId) => usersById[userId]?.displayName ?? userId)
+  }, [activeConversationId, me, typingUsersByConversation, usersById])
+
+  const stableMessages = useMemo(() => dedupeMessages(messages), [messages])
 
   useEffect(() => {
     const existing = getTokenFromCookie()
@@ -132,31 +151,59 @@ export function useChatApp() {
       setMe(null)
       setServers([])
       setChannels([])
+      setDirectThreads([])
       setMessages([])
       setUsersById({})
       setFriends([])
+      setFriendRequests([])
       setFriendSearchResults([])
       setSelectedServerId(null)
       setSelectedChannelId(null)
+      setSelectedDirectThreadId(null)
       setLatestInviteCode(null)
+      setPendingAttachments([])
+      setTypingUsersByConversation({})
       return
     }
 
     void (async () => {
       try {
-        const [currentUser, nextServers, nextFriends] = await Promise.all([
-          getMe(token),
+        const currentUser = await getMe(token)
+        const [serversResult, friendsResult, friendRequestsResult, directThreadsResult] = await Promise.allSettled([
           listServers(token),
-          listFriends(token)
+          listFriends(token),
+          listFriendRequests(token),
+          listDirectThreads(token)
         ])
+
+        const nextServers = serversResult.status === "fulfilled" ? serversResult.value : []
+        const nextFriends = friendsResult.status === "fulfilled" ? friendsResult.value : []
+        const nextFriendRequests = friendRequestsResult.status === "fulfilled" ? friendRequestsResult.value : []
+        const nextDirectThreads = directThreadsResult.status === "fulfilled" ? directThreadsResult.value : []
 
         setMe(currentUser)
         setServers(nextServers)
         setFriends(nextFriends)
+        setFriendRequests(nextFriendRequests)
+        setDirectThreads(nextDirectThreads)
         setUsersById((current) => mergeUsersById(current, [currentUser, ...nextFriends]))
         setSelectedServerId((current) =>
           current && nextServers.some((server) => server.id === current) ? current : (nextServers[0]?.id ?? null)
         )
+        setSelectedDirectThreadId((current) =>
+          current && nextDirectThreads.some((thread) => thread.id === current)
+            ? current
+            : null
+        )
+
+        if (
+          serversResult.status === "rejected" ||
+          friendsResult.status === "rejected" ||
+          friendRequestsResult.status === "rejected" ||
+          directThreadsResult.status === "rejected"
+        ) {
+          setStatusMessage("Logged in, but some sections are temporarily unavailable.")
+        }
       } catch (error) {
         clearTokenCookie()
         setToken(null)
@@ -188,20 +235,52 @@ export function useChatApp() {
   }, [token, selectedServerId])
 
   useEffect(() => {
-    if (!token || !selectedChannelId) {
+    if (!token || !activeConversationId) {
       setMessages([])
       return
     }
 
     void (async () => {
       try {
-        const nextMessages = await listMessages(token, selectedChannelId)
+        const nextMessages = selectedServerId
+          ? await listMessages(token, activeConversationId)
+          : await listDirectThreadMessages(token, activeConversationId)
         setMessages(dedupeMessages(nextMessages))
       } catch (error) {
         setErrorMessage(error instanceof Error ? error.message : "Failed to load messages.")
       }
     })()
-  }, [token, selectedChannelId])
+  }, [token, selectedServerId, activeConversationId])
+
+  useEffect(() => {
+    if (!token || !activeConversationId || messages.length === 0) {
+      return
+    }
+
+    const lastMessage = messages[messages.length - 1]
+    if (!lastMessage) {
+      return
+    }
+
+    const lastRead = lastReadMessageByConversationRef.current[activeConversationId]
+    if (lastRead === lastMessage.id) {
+      return
+    }
+
+    lastReadMessageByConversationRef.current[activeConversationId] = lastMessage.id
+
+    const request = selectedServerId
+      ? updateChannelReadMarker(token, activeConversationId, {
+          lastReadMessageId: lastMessage.id
+        })
+      : updateDirectThreadReadMarker(token, activeConversationId, {
+          lastReadMessageId: lastMessage.id
+        })
+
+    void request.catch(() => {
+      // Best effort for MVP.
+    })
+  }, [token, selectedServerId, activeConversationId, messages])
 
   useEffect(() => {
     if (!token || messages.length === 0) {
@@ -244,23 +323,73 @@ export function useChatApp() {
   }, [token, messages, usersById])
 
   useEffect(() => {
-    activeChannelRef.current = selectedChannelId
+    if (!token || !me || friendRequests.length === 0) {
+      return
+    }
+
+    const missingUserIds = Array.from(
+      new Set(
+        friendRequests
+          .flatMap((request) => [request.fromUserId, request.toUserId])
+          .filter((userId) => userId !== me.id && !usersById[userId])
+      )
+    )
+
+    if (missingUserIds.length === 0) {
+      return
+    }
+
+    let cancelled = false
+
+    void (async () => {
+      const results = await Promise.allSettled(
+        missingUserIds.map(async (userId) => await getUserById(token, userId))
+      )
+
+      if (cancelled) {
+        return
+      }
+
+      const resolved: User[] = []
+      for (const result of results) {
+        if (result.status === "fulfilled") {
+          resolved.push(result.value)
+        }
+      }
+
+      if (resolved.length > 0) {
+        setUsersById((current) => mergeUsersById(current, resolved))
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [token, me, friendRequests, usersById])
+
+  useEffect(() => {
+    activeChannelRef.current = activeConversationId
 
     const socket = socketRef.current
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       return
     }
 
-    if (selectedChannelId) {
-      socket.send(encode({ type: "subscribe", channelId: selectedChannelId }))
+    if (activeConversationId) {
+      socket.send(encodePayload({ type: "subscribe", conversationId: activeConversationId }))
     }
 
     return () => {
-      if (selectedChannelId && socket.readyState === WebSocket.OPEN) {
-        socket.send(encode({ type: "unsubscribe", channelId: selectedChannelId }))
+      if (activeConversationId && socket.readyState === WebSocket.OPEN) {
+        socket.send(encodePayload({ type: "unsubscribe", conversationId: activeConversationId }))
       }
     }
-  }, [selectedChannelId])
+  }, [activeConversationId])
+
+  useEffect(() => {
+    selectedServerRef.current = selectedServerId
+    selectedDirectThreadRef.current = selectedDirectThreadId
+  }, [selectedServerId, selectedDirectThreadId])
 
   useEffect(() => {
     if (!token) {
@@ -292,7 +421,7 @@ export function useChatApp() {
 
         setRealtimeStatus("connected")
         if (activeChannelRef.current) {
-          socket.send(encode({ type: "subscribe", channelId: activeChannelRef.current }))
+          socket.send(encodePayload({ type: "subscribe", conversationId: activeChannelRef.current }))
         }
       }
 
@@ -307,7 +436,7 @@ export function useChatApp() {
         }
 
         if (message.type === "message.created") {
-          if (message.payload.channelId !== activeChannelRef.current) {
+          if (message.payload.conversationId !== activeChannelRef.current) {
             return
           }
 
@@ -315,8 +444,17 @@ export function useChatApp() {
           return
         }
 
+        if (message.type === "direct-thread.created") {
+          setDirectThreads((current) => upsertDirectThread(current, message.payload))
+
+          if (!selectedServerRef.current && !selectedDirectThreadRef.current) {
+            setSelectedDirectThreadId(message.payload.id)
+          }
+          return
+        }
+
         if (message.type === "message.updated") {
-          if (message.payload.channelId !== activeChannelRef.current) {
+          if (message.payload.conversationId !== activeChannelRef.current) {
             return
           }
 
@@ -325,7 +463,7 @@ export function useChatApp() {
         }
 
         if (message.type === "message.deleted") {
-          if (message.payload.channelId !== activeChannelRef.current) {
+          if (message.payload.conversationId !== activeChannelRef.current) {
             return
           }
 
@@ -334,7 +472,7 @@ export function useChatApp() {
         }
 
         if (message.type === "reaction.updated") {
-          if (message.payload.channelId !== activeChannelRef.current) {
+          if (message.payload.conversationId !== activeChannelRef.current) {
             return
           }
 
@@ -348,6 +486,33 @@ export function useChatApp() {
                 : item
             )
           )
+          return
+        }
+
+        if (message.type === "typing.updated") {
+          const conversationId = message.payload.conversationId
+          const entryKey = `${conversationId}:${message.payload.userId}`
+          const expiresAt = new Date(message.payload.expiresAt).getTime()
+
+          if (message.payload.isTyping && Number.isFinite(expiresAt)) {
+            typingExpiryRef.current.set(entryKey, expiresAt)
+          } else {
+            typingExpiryRef.current.delete(entryKey)
+          }
+
+          setTypingUsersByConversation((current) => {
+            const users = new Set(current[conversationId] ?? [])
+            if (message.payload.isTyping && Number.isFinite(expiresAt)) {
+              users.add(message.payload.userId)
+            } else {
+              users.delete(message.payload.userId)
+            }
+
+            return {
+              ...current,
+              [conversationId]: Array.from(users)
+            }
+          })
         }
       }
 
@@ -377,6 +542,98 @@ export function useChatApp() {
       setRealtimeStatus("disconnected")
     }
   }, [token])
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now()
+      setTypingUsersByConversation((current) => {
+        let changed = false
+        const next: Record<string, string[]> = {}
+
+        for (const [conversationId, userIds] of Object.entries(current)) {
+          const filtered = userIds.filter((userId) => {
+            const expiresAt = typingExpiryRef.current.get(`${conversationId}:${userId}`)
+            if (!expiresAt) {
+              changed = true
+              return false
+            }
+
+            if (expiresAt <= now) {
+              typingExpiryRef.current.delete(`${conversationId}:${userId}`)
+              changed = true
+              return false
+            }
+
+            return true
+          })
+
+          if (filtered.length > 0) {
+            next[conversationId] = filtered
+          } else if (userIds.length > 0) {
+            changed = true
+          }
+        }
+
+        return changed ? next : current
+      })
+    }, 1000)
+
+    return () => {
+      clearInterval(interval)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!token || !activeConversationId) {
+      typingActiveRef.current = false
+      return
+    }
+
+    const sendTyping = (isTyping: boolean) => {
+      const request = selectedServerId
+        ? sendChannelTyping(token, activeConversationId, { isTyping })
+        : sendDirectThreadTyping(token, activeConversationId, { isTyping })
+      void request.catch(() => {})
+    }
+
+    const hasText = messageBody.trim().length > 0
+    const now = Date.now()
+
+    if (hasText && (!typingActiveRef.current || now - typingHeartbeatRef.current > 2500)) {
+      typingActiveRef.current = true
+      typingHeartbeatRef.current = now
+      sendTyping(true)
+    }
+
+    if (typingDebounceTimerRef.current) {
+      clearTimeout(typingDebounceTimerRef.current)
+      typingDebounceTimerRef.current = null
+    }
+
+    if (!hasText && typingActiveRef.current) {
+      typingActiveRef.current = false
+      sendTyping(false)
+      return
+    }
+
+    if (hasText) {
+      typingDebounceTimerRef.current = setTimeout(() => {
+        if (!typingActiveRef.current) {
+          return
+        }
+
+        typingActiveRef.current = false
+        sendTyping(false)
+      }, 3000)
+    }
+
+    return () => {
+      if (typingDebounceTimerRef.current) {
+        clearTimeout(typingDebounceTimerRef.current)
+        typingDebounceTimerRef.current = null
+      }
+    }
+  }, [token, selectedServerId, activeConversationId, messageBody])
 
   async function handleRegister(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -558,31 +815,106 @@ export function useChatApp() {
     }
   }
 
-  async function handleAddFriend(userId: string): Promise<void> {
+  async function handleSendFriendRequest(userId: string): Promise<void> {
     if (!token) {
       return
     }
 
-    setBusyKey("friend-add")
+    setBusyKey("friend-request-send")
     setErrorMessage(null)
     setStatusMessage(null)
 
     try {
-      await addFriend(token, { userId })
-      const nextFriends = await listFriends(token)
-      setFriends(nextFriends)
-      setUsersById((current) => mergeUsersById(current, nextFriends))
-      setStatusMessage("Friend added.")
+      const request = await sendFriendRequest(token, { userId })
+      setFriendRequests((current) => {
+        const existing = current.find((item) => item.id === request.id)
+        if (existing) {
+          return current.map((item) => (item.id === request.id ? request : item))
+        }
+        return [request, ...current]
+      })
+      setStatusMessage("Friend request sent.")
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Could not add friend.")
+      setErrorMessage(error instanceof Error ? error.message : "Could not send friend request.")
     } finally {
       setBusyKey(null)
     }
   }
 
+  async function handleRespondToFriendRequest(
+    requestId: string,
+    action: "accept" | "reject"
+  ): Promise<void> {
+    if (!token) {
+      return
+    }
+
+    setBusyKey(action === "accept" ? "friend-request-accept" : "friend-request-reject")
+    setErrorMessage(null)
+    setStatusMessage(null)
+
+    try {
+      await respondFriendRequest(token, requestId, { action })
+      const [nextFriendRequests, nextFriends] = await Promise.all([
+        listFriendRequests(token),
+        listFriends(token)
+      ])
+
+      setFriendRequests(nextFriendRequests)
+      setFriends(nextFriends)
+      setUsersById((current) => mergeUsersById(current, nextFriends))
+      setStatusMessage(action === "accept" ? "Friend request accepted." : "Friend request rejected.")
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not respond to friend request.")
+    } finally {
+      setBusyKey(null)
+    }
+  }
+
+  async function handleOpenDirectThread(friendId: string): Promise<void> {
+    if (!token || !me) {
+      return
+    }
+
+    setBusyKey("direct-thread-open")
+    setErrorMessage(null)
+
+    try {
+      const existing = directThreads.find((thread) => {
+        return (
+          thread.kind === "dm" &&
+          thread.participantIds.length === 2 &&
+          thread.participantIds.includes(me.id) &&
+          thread.participantIds.includes(friendId)
+        )
+      })
+
+      if (existing) {
+        handleSelectDirectThread(existing.id)
+        return
+      }
+
+      const created = await createDirectThread(token, {
+        participantIds: [friendId]
+      })
+
+      setDirectThreads((current) => upsertDirectThread(current, created))
+      handleSelectDirectThread(created.id)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not open direct chat.")
+    } finally {
+      setBusyKey(null)
+    }
+  }
+
+  function handleSelectDirectThread(threadId: string): void {
+    setSelectedServerId(null)
+    setSelectedDirectThreadId(threadId)
+  }
+
   async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!token || !selectedChannel) {
+    if (!token || !activeConversationId) {
       return
     }
 
@@ -595,9 +927,39 @@ export function useChatApp() {
     setErrorMessage(null)
 
     try {
-      const created = await createMessage(token, selectedChannel.id, { body: normalized })
+      let attachments: Attachment[] = []
+      if (pendingAttachments.length > 0) {
+        attachments = await Promise.all(
+          pendingAttachments.map(async (file) => {
+            return await uploadAttachment(token, {
+              fileName: file.name,
+              contentType: file.type || "application/octet-stream",
+              sizeBytes: file.size
+            })
+          })
+        )
+      }
+
+      const created = selectedServerId
+        ? await createMessage(token, activeConversationId, {
+            body: normalized,
+            attachments
+          })
+        : await createDirectThreadMessage(token, activeConversationId, {
+            body: normalized,
+            attachments
+          })
       setMessages((current) => upsertMessage(current, created))
       setMessageBody("")
+      setPendingAttachments([])
+
+      if (typingActiveRef.current) {
+        typingActiveRef.current = false
+        const request = selectedServerId
+          ? sendChannelTyping(token, activeConversationId, { isTyping: false })
+          : sendDirectThreadTyping(token, activeConversationId, { isTyping: false })
+        void request.catch(() => {})
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Could not send message.")
     } finally {
@@ -685,6 +1047,19 @@ export function useChatApp() {
     }
   }
 
+  function handlePickAttachments(files: FileList | null): void {
+    if (!files || files.length === 0) {
+      return
+    }
+
+    const picked = Array.from(files)
+    setPendingAttachments((current) => [...current, ...picked].slice(0, 10))
+  }
+
+  function handleRemovePendingAttachment(index: number): void {
+    setPendingAttachments((current) => current.filter((_, currentIndex) => currentIndex !== index))
+  }
+
   function getAuthorLabel(authorId: string): string {
     if (me && authorId === me.id) {
       return me.displayName
@@ -698,18 +1073,67 @@ export function useChatApp() {
     return authorId
   }
 
+  function getUserLabel(userId: string): string {
+    if (me && userId === me.id) {
+      return me.displayName
+    }
+
+    const user = usersById[userId]
+    if (user) {
+      return user.displayName
+    }
+
+    return userId
+  }
+
+  function handleSelectFriendsView(): void {
+    setSelectedServerId(null)
+    setSelectedDirectThreadId(null)
+  }
+
+  const pendingRequestCount = useMemo(
+    () => (me ? friendRequests.filter((r) => r.toUserId === me.id).length : 0),
+    [me, friendRequests]
+  )
+
+  function getDirectThreadAvatar(thread: DirectThread): string {
+    const label = getDirectThreadLabel(thread)
+    return label.charAt(0).toUpperCase()
+  }
+
+  function getDirectThreadLabel(thread: DirectThread): string {
+    if (thread.kind === "group") {
+      return thread.title
+    }
+
+    if (!me) {
+      return thread.title
+    }
+
+    const otherParticipantId = thread.participantIds.find((participantId) => participantId !== me.id)
+    if (!otherParticipantId) {
+      return thread.title
+    }
+
+    return usersById[otherParticipantId]?.displayName ?? thread.title
+  }
+
   return {
     token,
     me,
     servers,
     channels,
-    messages,
+    directThreads,
+    messages: stableMessages,
     friends,
+    friendRequests,
     friendSearchResults,
     selectedServer,
     selectedChannel,
+    selectedDirectThread,
     selectedServerId,
     selectedChannelId,
+    selectedDirectThreadId,
     registerEmail,
     registerUsername,
     registerDisplayName,
@@ -720,6 +1144,8 @@ export function useChatApp() {
     inviteCode,
     channelName,
     messageBody,
+    pendingAttachments,
+    typingUserLabels,
     friendSearchQuery,
     latestInviteCode,
     busyKey,
@@ -728,6 +1154,7 @@ export function useChatApp() {
     realtimeStatus,
     setSelectedServerId,
     setSelectedChannelId,
+    setSelectedDirectThreadId,
     setRegisterEmail,
     setRegisterUsername,
     setRegisterDisplayName,
@@ -739,6 +1166,11 @@ export function useChatApp() {
     setChannelName,
     setMessageBody,
     setFriendSearchQuery,
+    handleSelectDirectThread,
+    handleSelectFriendsView,
+    pendingRequestCount,
+    handlePickAttachments,
+    handleRemovePendingAttachment,
     handleRegister,
     handleLogin,
     handleSignOut,
@@ -747,12 +1179,17 @@ export function useChatApp() {
     handleCreateInvite,
     handleCreateChannel,
     handleSearchFriends,
-    handleAddFriend,
+    handleSendFriendRequest,
+    handleRespondToFriendRequest,
+    handleOpenDirectThread,
     handleSendMessage,
     handleUpdateMessage,
     handleDeleteMessage,
     handleAddReaction,
     handleRemoveReaction,
-    getAuthorLabel
+    getAuthorLabel,
+    getUserLabel,
+    getDirectThreadLabel,
+    getDirectThreadAvatar
   }
 }

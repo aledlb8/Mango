@@ -3,6 +3,7 @@ import { getAuthenticatedUser } from "../auth/session"
 import { readJson } from "../http/request"
 import { error, json } from "../http/response"
 import type { RouteContext } from "../router-context"
+import { normalizeAttachments } from "./message-attachments"
 
 export async function handleCreateMessage(
   request: Request,
@@ -37,7 +38,8 @@ export async function handleCreateMessage(
     return error(ctx.corsOrigin, 400, "Message body exceeds 2000 characters.")
   }
 
-  const message: Message = await ctx.store.createMessage(channelId, user.id, text)
+  const attachments = normalizeAttachments(body.attachments, user.id)
+  const message: Message = await ctx.store.createMessage(channelId, user.id, text, attachments)
   ctx.realtimeHub.publishMessageCreated(message)
 
   return json(ctx.corsOrigin, 201, message)
@@ -194,10 +196,12 @@ export async function handleAddReaction(
   }
 
   const reactions = await ctx.store.addReaction(messageId, user.id, emoji)
-  ctx.realtimeHub.publishReactionUpdated(channel.id, messageId, reactions)
+  ctx.realtimeHub.publishReactionUpdated(message.conversationId, message.directThreadId, messageId, reactions)
 
   return json(ctx.corsOrigin, 200, {
     messageId,
+    conversationId: message.conversationId,
+    directThreadId: message.directThreadId,
     reactions
   })
 }
@@ -233,10 +237,12 @@ export async function handleRemoveReaction(
   }
 
   const reactions = await ctx.store.removeReaction(messageId, user.id, normalizedEmoji)
-  ctx.realtimeHub.publishReactionUpdated(channel.id, messageId, reactions)
+  ctx.realtimeHub.publishReactionUpdated(message.conversationId, message.directThreadId, messageId, reactions)
 
   return json(ctx.corsOrigin, 200, {
     messageId,
+    conversationId: message.conversationId,
+    directThreadId: message.directThreadId,
     reactions
   })
 }

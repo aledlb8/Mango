@@ -1,4 +1,4 @@
-import type { User } from "@mango/contracts"
+import type { FriendRequest, User } from "@mango/contracts"
 import { createId } from "../id"
 import type { IdentityStore, StoredUser } from "./store"
 
@@ -8,6 +8,7 @@ type State = {
   usersByUsername: Map<string, StoredUser>
   sessionsByToken: Map<string, string>
   friendsByUserId: Map<string, Set<string>>
+  friendRequestsById: Map<string, FriendRequest>
 }
 
 function toPublicUser(user: StoredUser): User {
@@ -28,7 +29,8 @@ export class MemoryStore implements IdentityStore {
     usersByEmail: new Map<string, StoredUser>(),
     usersByUsername: new Map<string, StoredUser>(),
     sessionsByToken: new Map<string, string>(),
-    friendsByUserId: new Map<string, Set<string>>()
+    friendsByUserId: new Map<string, Set<string>>(),
+    friendRequestsById: new Map<string, FriendRequest>()
   }
 
   async createUser(email: string, username: string, displayName: string, passwordHash: string): Promise<StoredUser> {
@@ -98,6 +100,77 @@ export class MemoryStore implements IdentityStore {
     const friendFriends = this.state.friendsByUserId.get(friendId) ?? new Set<string>()
     friendFriends.add(userId)
     this.state.friendsByUserId.set(friendId, friendFriends)
+  }
+
+  async createFriendRequest(fromUserId: string, toUserId: string): Promise<FriendRequest> {
+    if (fromUserId === toUserId) {
+      throw new Error("You cannot send a friend request to yourself.")
+    }
+
+    const alreadyFriends = this.state.friendsByUserId.get(fromUserId)?.has(toUserId) ?? false
+    if (alreadyFriends) {
+      throw new Error("Users are already friends.")
+    }
+
+    const existing = Array.from(this.state.friendRequestsById.values()).find((request) => {
+      if (request.status !== "pending") {
+        return false
+      }
+
+      return (
+        (request.fromUserId === fromUserId && request.toUserId === toUserId) ||
+        (request.fromUserId === toUserId && request.toUserId === fromUserId)
+      )
+    })
+
+    if (existing) {
+      return { ...existing }
+    }
+
+    const request: FriendRequest = {
+      id: createId("frq"),
+      fromUserId,
+      toUserId,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      respondedAt: null
+    }
+
+    this.state.friendRequestsById.set(request.id, request)
+    return { ...request }
+  }
+
+  async listFriendRequests(userId: string): Promise<FriendRequest[]> {
+    return Array.from(this.state.friendRequestsById.values())
+      .filter((request) => request.status === "pending")
+      .filter((request) => request.fromUserId === userId || request.toUserId === userId)
+      .map((request) => ({ ...request }))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  }
+
+  async respondFriendRequest(
+    requestId: string,
+    responderUserId: string,
+    action: "accept" | "reject"
+  ): Promise<FriendRequest | null> {
+    const request = this.state.friendRequestsById.get(requestId)
+    if (!request || request.status !== "pending") {
+      return null
+    }
+
+    if (request.toUserId !== responderUserId) {
+      return null
+    }
+
+    request.status = action === "accept" ? "accepted" : "rejected"
+    request.respondedAt = new Date().toISOString()
+    this.state.friendRequestsById.set(request.id, request)
+
+    if (action === "accept") {
+      await this.addFriend(request.fromUserId, request.toUserId)
+    }
+
+    return { ...request }
   }
 
   async listFriends(userId: string): Promise<User[]> {

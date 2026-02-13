@@ -1,10 +1,14 @@
 import type {
+  Attachment,
   Channel,
   ChannelPermissionOverwrite,
+  DirectThread,
+  FriendRequest,
   MessageDeletedEvent,
   MessageReactionSummary,
   Message,
   Permission,
+  ReadMarker,
   Role,
   ServerInvite,
   Server,
@@ -26,9 +30,22 @@ export interface AppStore {
   searchUsers(query: string, excludeUserId: string): Promise<User[]>
   addFriend(userId: string, friendId: string): Promise<void>
   listFriends(userId: string): Promise<User[]>
+  createFriendRequest(fromUserId: string, toUserId: string): Promise<FriendRequest>
+  listFriendRequests(userId: string): Promise<FriendRequest[]>
+  respondFriendRequest(
+    requestId: string,
+    responderUserId: string,
+    action: "accept" | "reject"
+  ): Promise<FriendRequest | null>
 
   createSession(token: string, userId: string): Promise<void>
   getUserIdByToken(token: string): Promise<string | null>
+
+  createDirectThread(ownerId: string, participantIds: string[], title: string): Promise<DirectThread>
+  listDirectThreadsForUser(userId: string): Promise<DirectThread[]>
+  getDirectThreadById(threadId: string): Promise<DirectThread | null>
+  getDirectThreadByChannelId(channelId: string): Promise<DirectThread | null>
+  isDirectThreadParticipant(threadId: string, userId: string): Promise<boolean>
 
   createServer(name: string, ownerId: string): Promise<Server>
   listServersForUser(userId: string): Promise<Server[]>
@@ -44,7 +61,7 @@ export interface AppStore {
   getChannelById(channelId: string): Promise<Channel | null>
   hasChannelPermission(channelId: string, userId: string, permission: Permission): Promise<boolean>
 
-  createMessage(channelId: string, authorId: string, body: string): Promise<Message>
+  createMessage(channelId: string, authorId: string, body: string, attachments: Attachment[]): Promise<Message>
   listMessages(channelId: string): Promise<Message[]>
   getMessageById(messageId: string): Promise<Message | null>
   updateMessage(messageId: string, body: string): Promise<Message | null>
@@ -52,6 +69,12 @@ export interface AppStore {
   addReaction(messageId: string, userId: string, emoji: string): Promise<MessageReactionSummary[]>
   removeReaction(messageId: string, userId: string, emoji: string): Promise<MessageReactionSummary[]>
   listMessageReactions(messageId: string): Promise<MessageReactionSummary[]>
+  getReadMarker(conversationId: string, userId: string): Promise<ReadMarker | null>
+  upsertReadMarker(
+    conversationId: string,
+    userId: string,
+    lastReadMessageId: string | null
+  ): Promise<ReadMarker>
 
   listRoles(serverId: string): Promise<Role[]>
   createRole(serverId: string, name: string, permissions: Permission[]): Promise<Role>

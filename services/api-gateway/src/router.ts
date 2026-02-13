@@ -1,15 +1,29 @@
-import type { Message, MessageDeletedEvent, MessageReactionSummary } from "@mango/contracts"
+import type {
+  DirectThread,
+  Message,
+  MessageDeletedEvent,
+  MessageReactionSummary,
+  TypingIndicator
+} from "@mango/contracts"
 import { createHealthResponse } from "@mango/contracts"
 import {
   communityServiceUrl,
   identityServiceUrl,
+  mediaServiceUrl,
   messagingServiceUrl,
   preferCommunityServiceProxy,
   preferIdentityServiceProxy,
+  preferMediaServiceProxy,
   preferMessagingServiceProxy
 } from "./config"
 import { handleGetMe, handleLogin, handleRegister } from "./handlers/auth"
 import { handleCreateChannel, handleListChannels } from "./handlers/channels"
+import {
+  handleCreateDirectThread,
+  handleCreateDirectThreadMessage,
+  handleListDirectThreadMessages,
+  handleListDirectThreads
+} from "./handlers/direct-threads"
 import { handleCreateServerInvite, handleJoinServerInvite } from "./handlers/invites"
 import {
   handleAddReaction,
@@ -27,8 +41,22 @@ import {
   handleListRoles,
   handleUpsertChannelOverwrite
 } from "./handlers/permissions"
-import { handleAddFriend, handleGetUserById, handleListFriends, handleSearchUsers } from "./handlers/social"
+import {
+  handleGetChannelReadMarker,
+  handleGetDirectThreadReadMarker,
+  handleUpsertChannelReadMarker,
+  handleUpsertDirectThreadReadMarker
+} from "./handlers/read-markers"
+import {
+  handleCreateFriendRequest,
+  handleGetUserById,
+  handleListFriendRequests,
+  handleListFriends,
+  handleRespondFriendRequest,
+  handleSearchUsers
+} from "./handlers/social"
 import { handleCreateServer, handleListServers } from "./handlers/servers"
+import { handleChannelTyping, handleDirectThreadTyping } from "./handlers/typing"
 import { corsHeaders, error, json } from "./http/response"
 import type { RouteContext } from "./router-context"
 
@@ -37,17 +65,28 @@ const serverMembersRoute = /^\/v1\/servers\/([^/]+)\/members$/
 const serverRolesRoute = /^\/v1\/servers\/([^/]+)\/roles$/
 const serverRoleAssignRoute = /^\/v1\/servers\/([^/]+)\/roles\/assign$/
 const serverInvitesRoute = /^\/v1\/servers\/([^/]+)\/invites$/
+const directThreadsRoute = /^\/v1\/direct-threads$/
+const directThreadMessagesRoute = /^\/v1\/direct-threads\/([^/]+)\/messages$/
+const directThreadReadMarkerRoute = /^\/v1\/direct-threads\/([^/]+)\/read-marker$/
+const directThreadTypingRoute = /^\/v1\/direct-threads\/([^/]+)\/typing$/
 const channelMessagesRoute = /^\/v1\/channels\/([^/]+)\/messages$/
+const channelReadMarkerRoute = /^\/v1\/channels\/([^/]+)\/read-marker$/
+const channelTypingRoute = /^\/v1\/channels\/([^/]+)\/typing$/
 const channelOverwritesRoute = /^\/v1\/channels\/([^/]+)\/overwrites$/
 const messageRoute = /^\/v1\/messages\/([^/]+)$/
 const messageReactionsRoute = /^\/v1\/messages\/([^/]+)\/reactions$/
 const messageReactionRoute = /^\/v1\/messages\/([^/]+)\/reactions\/([^/]+)$/
 const inviteJoinRoute = /^\/v1\/invites\/([^/]+)\/join$/
 const friendsRoute = /^\/v1\/friends$/
+const friendRequestsRoute = /^\/v1\/friends\/requests$/
+const friendRequestRoute = /^\/v1\/friends\/requests\/([^/]+)$/
 const userRoute = /^\/v1\/users\/([^/]+)$/
+const attachmentsRoute = /^\/v1\/attachments$/
 
 type ReactionResponse = {
   messageId: string
+  conversationId?: string
+  directThreadId?: string | null
   reactions: MessageReactionSummary[]
 }
 
@@ -61,6 +100,10 @@ function shouldProxyCommunity(_ctx: RouteContext): boolean {
 
 function shouldProxyMessaging(_ctx: RouteContext): boolean {
   return preferMessagingServiceProxy
+}
+
+function shouldProxyMedia(_ctx: RouteContext): boolean {
+  return preferMediaServiceProxy
 }
 
 async function proxyToService(
@@ -139,10 +182,27 @@ async function publishRealtimeFromMessagingProxy(
 
   const upperMethod = method.toUpperCase()
 
-  if (upperMethod === "POST" && channelMessagesRoute.test(pathname)) {
+  if (upperMethod === "POST" && directThreadsRoute.test(pathname)) {
+    const payload = await parseProxiedJson<DirectThread>(response)
+    if (payload) {
+      ctx.realtimeHub.publishDirectThreadCreated(payload)
+    }
+    return
+  }
+
+  if (
+    upperMethod === "POST" &&
+    (channelMessagesRoute.test(pathname) || directThreadMessagesRoute.test(pathname))
+  ) {
     const payload = await parseProxiedJson<Message>(response)
     if (payload) {
-      ctx.realtimeHub.publishMessageCreated(payload)
+      let recipients: string[] = []
+      if (payload.directThreadId) {
+        const thread = await ctx.store.getDirectThreadById(payload.directThreadId)
+        recipients = thread?.participantIds ?? []
+      }
+
+      ctx.realtimeHub.publishMessageCreated(payload, recipients)
     }
     return
   }
@@ -177,7 +237,25 @@ async function publishRealtimeFromMessagingProxy(
       return
     }
 
-    ctx.realtimeHub.publishReactionUpdated(message.channelId, payload.messageId, payload.reactions)
+    ctx.realtimeHub.publishReactionUpdated(
+      payload.conversationId ?? message.conversationId,
+      payload.directThreadId ?? message.directThreadId,
+      payload.messageId,
+      payload.reactions
+    )
+    return
+  }
+
+  if (
+    upperMethod === "POST" &&
+    (channelTypingRoute.test(pathname) || directThreadTypingRoute.test(pathname))
+  ) {
+    const payload = await parseProxiedJson<TypingIndicator>(response)
+    if (!payload) {
+      return
+    }
+
+    ctx.realtimeHub.publishTypingUpdated(payload.conversationId, payload)
   }
 }
 
@@ -193,6 +271,17 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
 
   if (pathname === "/health" && request.method === "GET") {
     return json(ctx.corsOrigin, 200, createHealthResponse(ctx.service))
+  }
+
+  if (attachmentsRoute.test(pathname) && request.method === "POST") {
+    if (shouldProxyMedia(ctx)) {
+      const proxied = await proxyToService(mediaServiceUrl, request, ctx)
+      if (proxied) {
+        return proxied
+      }
+    }
+
+    return error(ctx.corsOrigin, 503, "Media service unavailable.")
   }
 
   if (pathname === "/v1/auth/register" && request.method === "POST") {
@@ -283,7 +372,38 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
         return proxied
       }
     }
-    return await handleAddFriend(request, ctx)
+    return await handleCreateFriendRequest(request, ctx)
+  }
+
+  if (friendRequestsRoute.test(pathname) && request.method === "GET") {
+    if (shouldProxyIdentity(ctx)) {
+      const proxied = await proxyToService(identityServiceUrl, request, ctx)
+      if (proxied) {
+        return proxied
+      }
+    }
+    return await handleListFriendRequests(request, ctx)
+  }
+
+  if (friendRequestsRoute.test(pathname) && request.method === "POST") {
+    if (shouldProxyIdentity(ctx)) {
+      const proxied = await proxyToService(identityServiceUrl, request, ctx)
+      if (proxied) {
+        return proxied
+      }
+    }
+    return await handleCreateFriendRequest(request, ctx)
+  }
+
+  const friendRequestMatch = pathname.match(friendRequestRoute)
+  if (friendRequestMatch?.[1] && request.method === "POST") {
+    if (shouldProxyIdentity(ctx)) {
+      const proxied = await proxyToService(identityServiceUrl, request, ctx)
+      if (proxied) {
+        return proxied
+      }
+    }
+    return await handleRespondFriendRequest(request, friendRequestMatch[1], ctx)
   }
 
   const serverChannelsMatch = pathname.match(serverChannelsRoute)
@@ -371,6 +491,82 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
     return await handleCreateServerInvite(request, serverInvitesMatch[1], ctx)
   }
 
+  if (directThreadsRoute.test(pathname) && request.method === "POST") {
+    if (shouldProxyMessaging(ctx)) {
+      const proxied = await proxyToService(messagingServiceUrl, request, ctx)
+      if (proxied) {
+        await publishRealtimeFromMessagingProxy(pathname, request.method, proxied, ctx)
+        return proxied
+      }
+    }
+    return await handleCreateDirectThread(request, ctx)
+  }
+
+  if (directThreadsRoute.test(pathname) && request.method === "GET") {
+    if (shouldProxyMessaging(ctx)) {
+      const proxied = await proxyToService(messagingServiceUrl, request, ctx)
+      if (proxied) {
+        return proxied
+      }
+    }
+    return await handleListDirectThreads(request, ctx)
+  }
+
+  const directThreadMessagesMatch = pathname.match(directThreadMessagesRoute)
+  if (directThreadMessagesMatch?.[1] && request.method === "POST") {
+    if (shouldProxyMessaging(ctx)) {
+      const proxied = await proxyToService(messagingServiceUrl, request, ctx)
+      if (proxied) {
+        await publishRealtimeFromMessagingProxy(pathname, request.method, proxied, ctx)
+        return proxied
+      }
+    }
+    return await handleCreateDirectThreadMessage(request, directThreadMessagesMatch[1], ctx)
+  }
+
+  if (directThreadMessagesMatch?.[1] && request.method === "GET") {
+    if (shouldProxyMessaging(ctx)) {
+      const proxied = await proxyToService(messagingServiceUrl, request, ctx)
+      if (proxied) {
+        return proxied
+      }
+    }
+    return await handleListDirectThreadMessages(request, directThreadMessagesMatch[1], ctx)
+  }
+
+  const directThreadReadMarkerMatch = pathname.match(directThreadReadMarkerRoute)
+  if (directThreadReadMarkerMatch?.[1] && request.method === "GET") {
+    if (shouldProxyMessaging(ctx)) {
+      const proxied = await proxyToService(messagingServiceUrl, request, ctx)
+      if (proxied) {
+        return proxied
+      }
+    }
+    return await handleGetDirectThreadReadMarker(request, directThreadReadMarkerMatch[1], ctx)
+  }
+
+  if (directThreadReadMarkerMatch?.[1] && request.method === "PUT") {
+    if (shouldProxyMessaging(ctx)) {
+      const proxied = await proxyToService(messagingServiceUrl, request, ctx)
+      if (proxied) {
+        return proxied
+      }
+    }
+    return await handleUpsertDirectThreadReadMarker(request, directThreadReadMarkerMatch[1], ctx)
+  }
+
+  const directThreadTypingMatch = pathname.match(directThreadTypingRoute)
+  if (directThreadTypingMatch?.[1] && request.method === "POST") {
+    if (shouldProxyMessaging(ctx)) {
+      const proxied = await proxyToService(messagingServiceUrl, request, ctx)
+      if (proxied) {
+        await publishRealtimeFromMessagingProxy(pathname, request.method, proxied, ctx)
+        return proxied
+      }
+    }
+    return await handleDirectThreadTyping(request, directThreadTypingMatch[1], ctx)
+  }
+
   const channelMessagesMatch = pathname.match(channelMessagesRoute)
   if (channelMessagesMatch?.[1] && request.method === "POST") {
     if (shouldProxyMessaging(ctx)) {
@@ -391,6 +587,39 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       }
     }
     return await handleListMessages(request, channelMessagesMatch[1], ctx)
+  }
+
+  const channelReadMarkerMatch = pathname.match(channelReadMarkerRoute)
+  if (channelReadMarkerMatch?.[1] && request.method === "GET") {
+    if (shouldProxyMessaging(ctx)) {
+      const proxied = await proxyToService(messagingServiceUrl, request, ctx)
+      if (proxied) {
+        return proxied
+      }
+    }
+    return await handleGetChannelReadMarker(request, channelReadMarkerMatch[1], ctx)
+  }
+
+  if (channelReadMarkerMatch?.[1] && request.method === "PUT") {
+    if (shouldProxyMessaging(ctx)) {
+      const proxied = await proxyToService(messagingServiceUrl, request, ctx)
+      if (proxied) {
+        return proxied
+      }
+    }
+    return await handleUpsertChannelReadMarker(request, channelReadMarkerMatch[1], ctx)
+  }
+
+  const channelTypingMatch = pathname.match(channelTypingRoute)
+  if (channelTypingMatch?.[1] && request.method === "POST") {
+    if (shouldProxyMessaging(ctx)) {
+      const proxied = await proxyToService(messagingServiceUrl, request, ctx)
+      if (proxied) {
+        await publishRealtimeFromMessagingProxy(pathname, request.method, proxied, ctx)
+        return proxied
+      }
+    }
+    return await handleChannelTyping(request, channelTypingMatch[1], ctx)
   }
 
   const channelOverwritesMatch = pathname.match(channelOverwritesRoute)
@@ -475,6 +704,7 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
     message: "Mango API gateway is running.",
     routes: [
       "GET /health",
+      "POST /v1/attachments",
       "POST /v1/auth/register",
       "POST /v1/auth/login",
       "GET /v1/me",
@@ -482,6 +712,9 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       "GET /v1/users/:userId",
       "GET /v1/friends",
       "POST /v1/friends",
+      "GET /v1/friends/requests",
+      "POST /v1/friends/requests",
+      "POST /v1/friends/requests/:requestId",
       "POST /v1/servers",
       "GET /v1/servers",
       "POST /v1/servers/:serverId/channels",
@@ -492,8 +725,18 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       "POST /v1/servers/:serverId/roles",
       "POST /v1/servers/:serverId/roles/assign",
       "POST /v1/servers/:serverId/invites",
+      "POST /v1/direct-threads",
+      "GET /v1/direct-threads",
+      "POST /v1/direct-threads/:threadId/messages",
+      "GET /v1/direct-threads/:threadId/messages",
+      "GET /v1/direct-threads/:threadId/read-marker",
+      "PUT /v1/direct-threads/:threadId/read-marker",
+      "POST /v1/direct-threads/:threadId/typing",
       "POST /v1/channels/:channelId/messages",
       "GET /v1/channels/:channelId/messages",
+      "GET /v1/channels/:channelId/read-marker",
+      "PUT /v1/channels/:channelId/read-marker",
+      "POST /v1/channels/:channelId/typing",
       "PUT /v1/channels/:channelId/overwrites",
       "PATCH /v1/messages/:messageId",
       "DELETE /v1/messages/:messageId",

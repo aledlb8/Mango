@@ -1,4 +1,8 @@
-import type { AddFriendRequest } from "@mango/contracts"
+import type {
+  AddFriendRequest,
+  FriendRequest,
+  RespondFriendRequestRequest
+} from "@mango/contracts"
 import { getAuthenticatedUser } from "../auth/session"
 import { readJson } from "../http/request"
 import { error, json } from "../http/response"
@@ -19,7 +23,15 @@ export async function handleSearchUsers(request: Request, ctx: RouteContext): Pr
   return json(ctx.corsOrigin, 200, users)
 }
 
-export async function handleAddFriend(request: Request, ctx: RouteContext): Promise<Response> {
+function isAlreadyFriendsError(reason: unknown): boolean {
+  if (!(reason instanceof Error)) {
+    return false
+  }
+
+  return reason.message.toLowerCase().includes("already friends")
+}
+
+export async function handleCreateFriendRequest(request: Request, ctx: RouteContext): Promise<Response> {
   const user = await getAuthenticatedUser(request, ctx.store)
   if (!user) {
     return error(ctx.corsOrigin, 401, "Unauthorized.")
@@ -39,8 +51,59 @@ export async function handleAddFriend(request: Request, ctx: RouteContext): Prom
     return error(ctx.corsOrigin, 404, "User not found.")
   }
 
-  await ctx.store.addFriend(user.id, target.id)
-  return json(ctx.corsOrigin, 200, { status: "ok" })
+  try {
+    const created: FriendRequest = await ctx.store.createFriendRequest(user.id, target.id)
+    return json(ctx.corsOrigin, 201, created)
+  } catch (reason) {
+    if (isAlreadyFriendsError(reason)) {
+      return error(ctx.corsOrigin, 409, "Users are already friends.")
+    }
+
+    throw reason
+  }
+}
+
+export async function handleListFriendRequests(request: Request, ctx: RouteContext): Promise<Response> {
+  const user = await getAuthenticatedUser(request, ctx.store)
+  if (!user) {
+    return error(ctx.corsOrigin, 401, "Unauthorized.")
+  }
+
+  const requests = await ctx.store.listFriendRequests(user.id)
+  return json(ctx.corsOrigin, 200, requests)
+}
+
+export async function handleRespondFriendRequest(
+  request: Request,
+  requestId: string,
+  ctx: RouteContext
+): Promise<Response> {
+  const user = await getAuthenticatedUser(request, ctx.store)
+  if (!user) {
+    return error(ctx.corsOrigin, 401, "Unauthorized.")
+  }
+
+  const body = await readJson<RespondFriendRequestRequest>(request)
+  if (!body || (body.action !== "accept" && body.action !== "reject")) {
+    return error(ctx.corsOrigin, 400, "action must be either 'accept' or 'reject'.")
+  }
+
+  const pending = await ctx.store.listFriendRequests(user.id)
+  const targetRequest = pending.find((item) => item.id === requestId)
+  if (!targetRequest) {
+    return error(ctx.corsOrigin, 404, "Friend request not found.")
+  }
+
+  if (targetRequest.toUserId !== user.id) {
+    return error(ctx.corsOrigin, 403, "Only the target user can respond to this request.")
+  }
+
+  const responded = await ctx.store.respondFriendRequest(requestId, user.id, body.action)
+  if (!responded) {
+    return error(ctx.corsOrigin, 409, "Friend request is no longer pending.")
+  }
+
+  return json(ctx.corsOrigin, 200, responded)
 }
 
 export async function handleListFriends(request: Request, ctx: RouteContext): Promise<Response> {
