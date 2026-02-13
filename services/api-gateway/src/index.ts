@@ -8,7 +8,9 @@ import {
   preferCommunityServiceProxy,
   preferIdentityServiceProxy,
   preferMediaServiceProxy,
+  preferPresenceServiceProxy,
   preferMessagingServiceProxy,
+  presenceServiceUrl,
   service
 } from "./config"
 import { createStore } from "./data/store-factory"
@@ -56,4 +58,7 @@ if (preferMessagingServiceProxy) {
 }
 if (preferMediaServiceProxy) {
   console.log(`${service} media proxy enabled -> ${mediaServiceUrl}`)
+}
+if (preferPresenceServiceProxy) {
+  console.log(`${service} presence proxy enabled -> ${presenceServiceUrl}`)
 }

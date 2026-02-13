@@ -1,4 +1,10 @@
-import type { DirectThread, Message, MessageReactionSummary, TypingIndicator } from "./api"
+import type {
+  DirectThread,
+  Message,
+  MessageReactionSummary,
+  PresenceState,
+  TypingIndicator
+} from "./api"
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001"
 const WS_BASE =
@@ -52,6 +58,10 @@ export type RealtimeServerMessage =
   | {
       type: "typing.updated"
       payload: TypingIndicator
+    }
+  | {
+      type: "presence.updated"
+      payload: PresenceState
     }
   | {
       type: "pong"

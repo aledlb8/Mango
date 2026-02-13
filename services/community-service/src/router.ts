@@ -1,6 +1,7 @@
 import { createHealthResponse } from "@mango/contracts"
 import { handleCreateChannel, handleListChannels } from "./handlers/channels"
 import { handleCreateServerInvite, handleJoinServerInvite } from "./handlers/invites"
+import { handleCreateModerationAction, handleListAuditLogs } from "./handlers/moderation"
 import {
   handleAddServerMember,
   handleAssignRole,
@@ -18,6 +19,8 @@ const serverMembersRoute = /^\/v1\/servers\/([^/]+)\/members$/
 const serverRolesRoute = /^\/v1\/servers\/([^/]+)\/roles$/
 const serverRoleAssignRoute = /^\/v1\/servers\/([^/]+)\/roles\/assign$/
 const serverInvitesRoute = /^\/v1\/servers\/([^/]+)\/invites$/
+const serverModerationActionsRoute = /^\/v1\/servers\/([^/]+)\/moderation\/actions$/
+const serverAuditLogsRoute = /^\/v1\/servers\/([^/]+)\/audit-logs$/
 const channelOverwritesRoute = /^\/v1\/channels\/([^/]+)\/overwrites$/
 const inviteJoinRoute = /^\/v1\/invites\/([^/]+)\/join$/
 
@@ -80,6 +83,16 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
     return await handleCreateServerInvite(request, serverInvitesMatch[1], ctx)
   }
 
+  const serverModerationActionsMatch = pathname.match(serverModerationActionsRoute)
+  if (serverModerationActionsMatch?.[1] && request.method === "POST") {
+    return await handleCreateModerationAction(request, serverModerationActionsMatch[1], ctx)
+  }
+
+  const serverAuditLogsMatch = pathname.match(serverAuditLogsRoute)
+  if (serverAuditLogsMatch?.[1] && request.method === "GET") {
+    return await handleListAuditLogs(request, serverAuditLogsMatch[1], ctx)
+  }
+
   const channelOverwritesMatch = pathname.match(channelOverwritesRoute)
   if (channelOverwritesMatch?.[1] && request.method === "PUT") {
     return await handleUpsertChannelOverwrite(request, channelOverwritesMatch[1], ctx)
@@ -109,6 +122,8 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       "POST /v1/servers/:serverId/roles",
       "POST /v1/servers/:serverId/roles/assign",
       "POST /v1/servers/:serverId/invites",
+      "POST /v1/servers/:serverId/moderation/actions",
+      "GET /v1/servers/:serverId/audit-logs",
       "PUT /v1/channels/:channelId/overwrites",
       "POST /v1/invites/:code/join"
     ]

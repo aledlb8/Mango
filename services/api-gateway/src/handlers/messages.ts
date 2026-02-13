@@ -4,6 +4,7 @@ import { readJson } from "../http/request"
 import { error, json } from "../http/response"
 import type { RouteContext } from "../router-context"
 import { normalizeAttachments } from "./message-attachments"
+import { enqueueMessageNotificationsBestEffort } from "./notification-dispatch"
 
 export async function handleCreateMessage(
   request: Request,
@@ -41,6 +42,7 @@ export async function handleCreateMessage(
   const attachments = normalizeAttachments(body.attachments, user.id)
   const message: Message = await ctx.store.createMessage(channelId, user.id, text, attachments)
   ctx.realtimeHub.publishMessageCreated(message)
+  await enqueueMessageNotificationsBestEffort(message, ctx)
 
   return json(ctx.corsOrigin, 201, message)
 }

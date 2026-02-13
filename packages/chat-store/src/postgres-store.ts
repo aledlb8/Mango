@@ -1,5 +1,6 @@
 import { SQL } from "bun"
 import type {
+  AuditLogEntry,
   Attachment,
   Channel,
   ChannelPermissionOverwrite,
@@ -8,9 +9,14 @@ import type {
   Message,
   MessageDeletedEvent,
   MessageReactionSummary,
+  ModerationAction,
+  ModerationActionType,
   Permission,
+  PushSubscription,
   ReadMarker,
   Role,
+  SearchResults,
+  SearchScope,
   ServerInvite,
   Server,
   User
@@ -147,6 +153,39 @@ type ReadMarkerRow = {
   updated_at: string | Date
 }
 
+type ModerationActionRow = {
+  id: string
+  server_id: string
+  actor_id: string
+  target_user_id: string
+  action_type: ModerationActionType
+  reason: string | null
+  expires_at: string | Date | null
+  created_at: string | Date
+}
+
+type AuditLogRow = {
+  id: string
+  server_id: string
+  actor_id: string | null
+  target_user_id: string | null
+  action_type: string
+  reason: string | null
+  metadata: unknown
+  created_at: string | Date
+}
+
+type PushSubscriptionRow = {
+  id: string
+  user_id: string
+  endpoint: string
+  p256dh: string
+  auth: string
+  user_agent: string | null
+  created_at: string | Date
+  updated_at: string | Date
+}
+
 function toIso(value: string | Date): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString()
 }
@@ -277,6 +316,68 @@ function mapReadMarker(row: ReadMarkerRow): ReadMarker {
     conversationId: row.conversation_id,
     userId: row.user_id,
     lastReadMessageId: row.last_read_message_id,
+    updatedAt: toIso(row.updated_at)
+  }
+}
+
+function parseMetadata(value: unknown): Record<string, unknown> {
+  if (!value) {
+    return {}
+  }
+
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      return {}
+    }
+  }
+
+  return {}
+}
+
+function mapModerationAction(row: ModerationActionRow): ModerationAction {
+  return {
+    id: row.id,
+    serverId: row.server_id,
+    actorId: row.actor_id,
+    targetUserId: row.target_user_id,
+    actionType: row.action_type,
+    reason: row.reason,
+    expiresAt: row.expires_at ? toIso(row.expires_at) : null,
+    createdAt: toIso(row.created_at)
+  }
+}
+
+function mapAuditLog(row: AuditLogRow): AuditLogEntry {
+  return {
+    id: row.id,
+    serverId: row.server_id,
+    actorId: row.actor_id,
+    targetUserId: row.target_user_id,
+    actionType: row.action_type,
+    reason: row.reason,
+    metadata: parseMetadata(row.metadata),
+    createdAt: toIso(row.created_at)
+  }
+}
+
+function mapPushSubscription(row: PushSubscriptionRow): PushSubscription {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    endpoint: row.endpoint,
+    p256dh: row.p256dh,
+    auth: row.auth,
+    userAgent: row.user_agent,
+    createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at)
   }
 }
@@ -810,6 +911,10 @@ export class PostgresStore implements AppStore {
   }
 
   async addServerMember(serverId: string, userId: string): Promise<void> {
+    if (await this.isUserBanned(serverId, userId)) {
+      throw new Error("User is banned from this server.")
+    }
+
     const defaultRole = await this.getDefaultRole(serverId)
 
     await this.sql.begin(async (tx) => {
@@ -840,6 +945,161 @@ export class PostgresStore implements AppStore {
     return rows.map(mapPublicUser)
   }
 
+  async isUserBanned(serverId: string, userId: string): Promise<boolean> {
+    const rows = await this.sql<{ exists: boolean }[]>`
+      SELECT EXISTS (
+        SELECT 1
+        FROM server_bans
+        WHERE server_id = ${serverId}
+          AND user_id = ${userId}
+      ) AS exists
+    `
+
+    return Boolean(rows[0]?.exists)
+  }
+
+  async isUserTimedOut(serverId: string, userId: string): Promise<boolean> {
+    await this.sql`
+      DELETE FROM server_timeouts
+      WHERE server_id = ${serverId}
+        AND user_id = ${userId}
+        AND expires_at <= NOW()
+    `
+
+    const rows = await this.sql<{ exists: boolean }[]>`
+      SELECT EXISTS (
+        SELECT 1
+        FROM server_timeouts
+        WHERE server_id = ${serverId}
+          AND user_id = ${userId}
+          AND expires_at > NOW()
+      ) AS exists
+    `
+
+    return Boolean(rows[0]?.exists)
+  }
+
+  async createModerationAction(
+    serverId: string,
+    actorId: string,
+    targetUserId: string,
+    actionType: ModerationActionType,
+    reason: string | null,
+    expiresAt: string | null
+  ): Promise<ModerationAction> {
+    const id = createId("mod")
+    const createdAt = new Date().toISOString()
+    const auditLogId = createId("aud")
+
+    const action = await this.sql.begin(async (tx) => {
+      const actionRows = await tx<ModerationActionRow[]>`
+        INSERT INTO moderation_actions (
+          id, server_id, actor_id, target_user_id, action_type, reason, expires_at, created_at
+        )
+        VALUES (${id}, ${serverId}, ${actorId}, ${targetUserId}, ${actionType}, ${reason}, ${expiresAt}, ${createdAt})
+        RETURNING id, server_id, actor_id, target_user_id, action_type, reason, expires_at, created_at
+      `
+
+      if (actionType === "kick") {
+        await tx`
+          DELETE FROM member_roles
+          WHERE server_id = ${serverId}
+            AND user_id = ${targetUserId}
+        `
+        await tx`
+          DELETE FROM server_members
+          WHERE server_id = ${serverId}
+            AND user_id = ${targetUserId}
+        `
+        await tx`
+          DELETE FROM server_timeouts
+          WHERE server_id = ${serverId}
+            AND user_id = ${targetUserId}
+        `
+      } else if (actionType === "ban") {
+        await tx`
+          INSERT INTO server_bans (server_id, user_id, banned_by, reason, banned_at)
+          VALUES (${serverId}, ${targetUserId}, ${actorId}, ${reason}, ${createdAt})
+          ON CONFLICT (server_id, user_id)
+          DO UPDATE SET
+            banned_by = EXCLUDED.banned_by,
+            reason = EXCLUDED.reason,
+            banned_at = EXCLUDED.banned_at
+        `
+        await tx`
+          DELETE FROM member_roles
+          WHERE server_id = ${serverId}
+            AND user_id = ${targetUserId}
+        `
+        await tx`
+          DELETE FROM server_members
+          WHERE server_id = ${serverId}
+            AND user_id = ${targetUserId}
+        `
+        await tx`
+          DELETE FROM server_timeouts
+          WHERE server_id = ${serverId}
+            AND user_id = ${targetUserId}
+        `
+      } else if (actionType === "timeout") {
+        if (!expiresAt) {
+          throw new Error("Timeout requires expiresAt.")
+        }
+
+        await tx`
+          INSERT INTO server_timeouts (
+            server_id, user_id, muted_by, reason, expires_at, created_at
+          )
+          VALUES (${serverId}, ${targetUserId}, ${actorId}, ${reason}, ${expiresAt}, ${createdAt})
+          ON CONFLICT (server_id, user_id)
+          DO UPDATE SET
+            muted_by = EXCLUDED.muted_by,
+            reason = EXCLUDED.reason,
+            expires_at = EXCLUDED.expires_at,
+            created_at = EXCLUDED.created_at
+        `
+      } else if (actionType === "unban") {
+        await tx`
+          DELETE FROM server_bans
+          WHERE server_id = ${serverId}
+            AND user_id = ${targetUserId}
+        `
+      }
+
+      await tx`
+        INSERT INTO audit_logs (
+          id, server_id, actor_id, target_user_id, action_type, reason, metadata, created_at
+        )
+        VALUES (
+          ${auditLogId},
+          ${serverId},
+          ${actorId},
+          ${targetUserId},
+          ${`moderation.${actionType}`},
+          ${reason},
+          ${JSON.stringify({ moderationActionId: id, expiresAt })},
+          ${createdAt}
+        )
+      `
+
+      return actionRows[0]
+    })
+
+    return mapModerationAction(action)
+  }
+
+  async listAuditLogs(serverId: string, limit: number): Promise<AuditLogEntry[]> {
+    const rows = await this.sql<AuditLogRow[]>`
+      SELECT id, server_id, actor_id, target_user_id, action_type, reason, metadata, created_at
+      FROM audit_logs
+      WHERE server_id = ${serverId}
+      ORDER BY created_at DESC
+      LIMIT ${Math.max(1, Math.min(limit, 200))}
+    `
+
+    return rows.map(mapAuditLog)
+  }
+
   async hasServerPermission(serverId: string, userId: string, permission: Permission): Promise<boolean> {
     const server = await this.getServerById(serverId)
     if (!server) {
@@ -851,7 +1111,7 @@ export class PostgresStore implements AppStore {
 
     const roles = await this.listRoles(serverId)
     const memberRoleIds = await this.listMemberRoleIds(serverId, userId)
-    return hasPermissionAfterOverwrites({
+    const hasPermission = hasPermissionAfterOverwrites({
       permission,
       server,
       userId,
@@ -860,6 +1120,16 @@ export class PostgresStore implements AppStore {
       overwrites: [],
       includeChannelOverwrites: false
     })
+
+    if (!hasPermission) {
+      return false
+    }
+
+    if (permission === "send_messages" && (await this.isUserTimedOut(serverId, userId))) {
+      return false
+    }
+
+    return true
   }
 
   async createChannel(serverId: string, name: string): Promise<Channel> {
@@ -929,7 +1199,7 @@ export class PostgresStore implements AppStore {
     const memberRoleIds = await this.listMemberRoleIds(server.id, userId)
     const overwrites = await this.listChannelOverwrites(channelId)
 
-    return hasPermissionAfterOverwrites({
+    const hasPermission = hasPermissionAfterOverwrites({
       permission,
       server,
       userId,
@@ -938,6 +1208,16 @@ export class PostgresStore implements AppStore {
       overwrites,
       includeChannelOverwrites: true
     })
+
+    if (!hasPermission) {
+      return false
+    }
+
+    if (permission === "send_messages" && (await this.isUserTimedOut(server.id, userId))) {
+      return false
+    }
+
+    return true
   }
 
   async createMessage(
@@ -1245,6 +1525,202 @@ export class PostgresStore implements AppStore {
     return rows.map(mapOverwrite)
   }
 
+  async createPushSubscription(
+    userId: string,
+    endpoint: string,
+    p256dh: string,
+    auth: string,
+    userAgent: string | null
+  ): Promise<PushSubscription> {
+    const id = createId("psh")
+    const now = new Date().toISOString()
+
+    const rows = await this.sql<PushSubscriptionRow[]>`
+      INSERT INTO push_subscriptions (
+        id, user_id, endpoint, p256dh, auth, user_agent, created_at, updated_at
+      )
+      VALUES (${id}, ${userId}, ${endpoint}, ${p256dh}, ${auth}, ${userAgent}, ${now}, ${now})
+      ON CONFLICT (user_id, endpoint)
+      DO UPDATE SET
+        p256dh = EXCLUDED.p256dh,
+        auth = EXCLUDED.auth,
+        user_agent = EXCLUDED.user_agent,
+        updated_at = EXCLUDED.updated_at
+      RETURNING id, user_id, endpoint, p256dh, auth, user_agent, created_at, updated_at
+    `
+
+    return mapPushSubscription(rows[0])
+  }
+
+  async listPushSubscriptions(userId: string): Promise<PushSubscription[]> {
+    const rows = await this.sql<PushSubscriptionRow[]>`
+      SELECT id, user_id, endpoint, p256dh, auth, user_agent, created_at, updated_at
+      FROM push_subscriptions
+      WHERE user_id = ${userId}
+      ORDER BY created_at DESC
+    `
+
+    return rows.map(mapPushSubscription)
+  }
+
+  async deletePushSubscription(userId: string, subscriptionId: string): Promise<boolean> {
+    const rows = await this.sql<{ id: string }[]>`
+      DELETE FROM push_subscriptions
+      WHERE id = ${subscriptionId}
+        AND user_id = ${userId}
+      RETURNING id
+    `
+
+    return Boolean(rows[0]?.id)
+  }
+
+  async enqueueNotification(userId: string, title: string, body: string, url: string | null): Promise<void> {
+    const id = createId("ntf")
+    const createdAt = new Date().toISOString()
+
+    await this.sql`
+      INSERT INTO notification_jobs (
+        id, user_id, title, body, url, payload, status, attempts, created_at
+      )
+      VALUES (
+        ${id},
+        ${userId},
+        ${title},
+        ${body},
+        ${url},
+        ${JSON.stringify({ userId, title, body, url })},
+        'pending',
+        0,
+        ${createdAt}
+      )
+    `
+  }
+
+  async searchChannels(
+    query: string,
+    userId: string,
+    serverId: string | null,
+    limit: number
+  ): Promise<Channel[]> {
+    const normalized = query.trim()
+    if (!normalized) {
+      return []
+    }
+
+    const max = Math.max(1, Math.min(limit, 100))
+    const pattern = `%${normalized}%`
+    const rows = await this.sql<ChannelRow[]>`
+      SELECT c.id, c.server_id, c.name, c.channel_type, c.created_at
+      FROM channels c
+      INNER JOIN server_members sm
+        ON sm.server_id = c.server_id
+       AND sm.user_id = ${userId}
+      WHERE c.is_direct_thread_backing = FALSE
+        AND c.name ILIKE ${pattern}
+        AND (${serverId}::text IS NULL OR c.server_id = ${serverId})
+      ORDER BY c.created_at DESC
+      LIMIT ${max * 4}
+    `
+
+    const visible: Channel[] = []
+    for (const row of rows) {
+      if (!(await this.hasChannelPermission(row.id, userId, "read_messages"))) {
+        continue
+      }
+
+      visible.push(mapChannel(row))
+      if (visible.length >= max) {
+        break
+      }
+    }
+
+    return visible
+  }
+
+  async searchMessages(
+    query: string,
+    userId: string,
+    serverId: string | null,
+    limit: number
+  ): Promise<Message[]> {
+    const normalized = query.trim()
+    if (!normalized) {
+      return []
+    }
+
+    const max = Math.max(1, Math.min(limit, 100))
+    const pattern = `%${normalized}%`
+    const rows = await this.sql<MessageWithThreadRow[]>`
+      SELECT
+        m.id,
+        m.channel_id,
+        m.author_id,
+        m.body,
+        m.created_at,
+        m.updated_at,
+        dt.id AS direct_thread_id
+      FROM messages m
+      INNER JOIN channels c ON c.id = m.channel_id
+      LEFT JOIN direct_threads dt ON dt.channel_id = m.channel_id
+      WHERE m.body ILIKE ${pattern}
+        AND (${serverId}::text IS NULL OR c.server_id = ${serverId})
+      ORDER BY m.created_at DESC
+      LIMIT ${max * 6}
+    `
+
+    const messages: Message[] = []
+    for (const row of rows) {
+      if (row.direct_thread_id) {
+        const isParticipant = await this.isDirectThreadParticipant(row.direct_thread_id, userId)
+        if (!isParticipant) {
+          continue
+        }
+      } else {
+        const canRead = await this.hasChannelPermission(row.channel_id, userId, "read_messages")
+        if (!canRead) {
+          continue
+        }
+      }
+
+      const full = await this.getMessageById(row.id)
+      if (!full) {
+        continue
+      }
+
+      messages.push(full)
+      if (messages.length >= max) {
+        break
+      }
+    }
+
+    return messages
+  }
+
+  async search(
+    query: string,
+    userId: string,
+    scope: SearchScope,
+    serverId: string | null,
+    limit: number
+  ): Promise<SearchResults> {
+    const max = Math.max(1, Math.min(limit, 100))
+    const users = scope === "all" || scope === "users" ? await this.searchUsers(query, userId) : []
+    const channels =
+      scope === "all" || scope === "channels"
+        ? await this.searchChannels(query, userId, serverId, max)
+        : []
+    const messages =
+      scope === "all" || scope === "messages"
+        ? await this.searchMessages(query, userId, serverId, max)
+        : []
+
+    return {
+      users: users.slice(0, max),
+      channels: channels.slice(0, max),
+      messages: messages.slice(0, max)
+    }
+  }
+
   async createServerInvite(
     serverId: string,
     createdBy: string,
@@ -1292,6 +1768,19 @@ export class PostgresStore implements AppStore {
       }
 
       if (invite.max_uses !== null && invite.uses >= invite.max_uses) {
+        return null
+      }
+
+      const banRows = await tx<{ exists: boolean }[]>`
+        SELECT EXISTS (
+          SELECT 1
+          FROM server_bans
+          WHERE server_id = ${invite.server_id}
+            AND user_id = ${userId}
+        ) AS exists
+      `
+
+      if (banRows[0]?.exists) {
         return null
       }
 

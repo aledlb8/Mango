@@ -1,4 +1,5 @@
 import type {
+  AuditLogEntry,
   Attachment,
   Channel,
   ChannelPermissionOverwrite,
@@ -7,9 +8,14 @@ import type {
   MessageDeletedEvent,
   MessageReactionSummary,
   Message,
+  ModerationAction,
+  ModerationActionType,
   Permission,
+  PushSubscription,
   ReadMarker,
   Role,
+  SearchResults,
+  SearchScope,
   ServerInvite,
   Server,
   User
@@ -54,6 +60,17 @@ export interface AppStore {
   addServerMember(serverId: string, userId: string): Promise<void>
   listServerMembers(serverId: string): Promise<User[]>
   hasServerPermission(serverId: string, userId: string, permission: Permission): Promise<boolean>
+  isUserBanned(serverId: string, userId: string): Promise<boolean>
+  isUserTimedOut(serverId: string, userId: string): Promise<boolean>
+  createModerationAction(
+    serverId: string,
+    actorId: string,
+    targetUserId: string,
+    actionType: ModerationActionType,
+    reason: string | null,
+    expiresAt: string | null
+  ): Promise<ModerationAction>
+  listAuditLogs(serverId: string, limit: number): Promise<AuditLogEntry[]>
 
   createChannel(serverId: string, name: string): Promise<Channel>
   listChannels(serverId: string): Promise<Channel[]>
@@ -97,6 +114,27 @@ export interface AppStore {
     expiresAt: string | null
   ): Promise<ServerInvite>
   joinServerByInvite(code: string, userId: string): Promise<Server | null>
+
+  createPushSubscription(
+    userId: string,
+    endpoint: string,
+    p256dh: string,
+    auth: string,
+    userAgent: string | null
+  ): Promise<PushSubscription>
+  listPushSubscriptions(userId: string): Promise<PushSubscription[]>
+  deletePushSubscription(userId: string, subscriptionId: string): Promise<boolean>
+  enqueueNotification(userId: string, title: string, body: string, url: string | null): Promise<void>
+
+  searchChannels(query: string, userId: string, serverId: string | null, limit: number): Promise<Channel[]>
+  searchMessages(query: string, userId: string, serverId: string | null, limit: number): Promise<Message[]>
+  search(
+    query: string,
+    userId: string,
+    scope: SearchScope,
+    serverId: string | null,
+    limit: number
+  ): Promise<SearchResults>
 }
 
 export type StoreInitResult = {

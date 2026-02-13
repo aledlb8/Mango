@@ -6,6 +6,7 @@ type AllFriendsTabProps = {
   friends: User[]
   busyKey: string | null
   onOpenDirectThread: (friendId: string) => Promise<void>
+  getUserPresenceStatus: (userId: string) => "online" | "idle" | "dnd" | "offline"
 }
 
 export function AllFriendsTab(props: AllFriendsTabProps) {
@@ -30,8 +31,20 @@ export function AllFriendsTab(props: AllFriendsTabProps) {
             key={friend.id}
             className="group flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-secondary/50"
           >
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-semibold text-primary-foreground">
+            <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-semibold text-primary-foreground">
               {friend.displayName.charAt(0).toUpperCase()}
+              <span
+                className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-background ${
+                  props.getUserPresenceStatus(friend.id) === "online"
+                    ? "bg-emerald-500"
+                    : props.getUserPresenceStatus(friend.id) === "idle"
+                      ? "bg-amber-400"
+                      : props.getUserPresenceStatus(friend.id) === "dnd"
+                        ? "bg-rose-500"
+                        : "bg-muted-foreground"
+                }`}
+                title={props.getUserPresenceStatus(friend.id)}
+              />
             </div>
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium">{friend.displayName}</p>

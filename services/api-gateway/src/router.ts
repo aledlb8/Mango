@@ -3,6 +3,7 @@ import type {
   Message,
   MessageDeletedEvent,
   MessageReactionSummary,
+  PresenceState,
   TypingIndicator
 } from "@mango/contracts"
 import { createHealthResponse } from "@mango/contracts"
@@ -11,10 +12,12 @@ import {
   identityServiceUrl,
   mediaServiceUrl,
   messagingServiceUrl,
+  presenceServiceUrl,
   preferCommunityServiceProxy,
   preferIdentityServiceProxy,
   preferMediaServiceProxy,
-  preferMessagingServiceProxy
+  preferMessagingServiceProxy,
+  preferPresenceServiceProxy
 } from "./config"
 import { handleGetMe, handleLogin, handleRegister } from "./handlers/auth"
 import { handleCreateChannel, handleListChannels } from "./handlers/channels"
@@ -25,6 +28,7 @@ import {
   handleListDirectThreads
 } from "./handlers/direct-threads"
 import { handleCreateServerInvite, handleJoinServerInvite } from "./handlers/invites"
+import { handleCreateModerationAction, handleListAuditLogs } from "./handlers/moderation"
 import {
   handleAddReaction,
   handleCreateMessage,
@@ -33,6 +37,12 @@ import {
   handleRemoveReaction,
   handleUpdateMessage
 } from "./handlers/messages"
+import { enqueueMessageNotificationsBestEffort } from "./handlers/notification-dispatch"
+import {
+  handleCreatePushSubscription,
+  handleDeletePushSubscription,
+  handleListPushSubscriptions
+} from "./handlers/notifications"
 import {
   handleAddServerMember,
   handleAssignRole,
@@ -56,8 +66,10 @@ import {
   handleSearchUsers
 } from "./handlers/social"
 import { handleCreateServer, handleListServers } from "./handlers/servers"
+import { handleSearch } from "./handlers/search"
 import { handleChannelTyping, handleDirectThreadTyping } from "./handlers/typing"
 import { corsHeaders, error, json } from "./http/response"
+import { checkRateLimit } from "./rate-limit"
 import type { RouteContext } from "./router-context"
 
 const serverChannelsRoute = /^\/v1\/servers\/([^/]+)\/channels$/
@@ -65,6 +77,8 @@ const serverMembersRoute = /^\/v1\/servers\/([^/]+)\/members$/
 const serverRolesRoute = /^\/v1\/servers\/([^/]+)\/roles$/
 const serverRoleAssignRoute = /^\/v1\/servers\/([^/]+)\/roles\/assign$/
 const serverInvitesRoute = /^\/v1\/servers\/([^/]+)\/invites$/
+const serverModerationActionsRoute = /^\/v1\/servers\/([^/]+)\/moderation\/actions$/
+const serverAuditLogsRoute = /^\/v1\/servers\/([^/]+)\/audit-logs$/
 const directThreadsRoute = /^\/v1\/direct-threads$/
 const directThreadMessagesRoute = /^\/v1\/direct-threads\/([^/]+)\/messages$/
 const directThreadReadMarkerRoute = /^\/v1\/direct-threads\/([^/]+)\/read-marker$/
@@ -80,8 +94,14 @@ const inviteJoinRoute = /^\/v1\/invites\/([^/]+)\/join$/
 const friendsRoute = /^\/v1\/friends$/
 const friendRequestsRoute = /^\/v1\/friends\/requests$/
 const friendRequestRoute = /^\/v1\/friends\/requests\/([^/]+)$/
+const pushSubscriptionsRoute = /^\/v1\/notifications\/push-subscriptions$/
+const pushSubscriptionRoute = /^\/v1\/notifications\/push-subscriptions\/([^/]+)$/
 const userRoute = /^\/v1\/users\/([^/]+)$/
 const attachmentsRoute = /^\/v1\/attachments$/
+const presenceRoute = /^\/v1\/presence$/
+const presenceMeRoute = /^\/v1\/presence\/me$/
+const presenceBulkRoute = /^\/v1\/presence\/bulk$/
+const presenceUserRoute = /^\/v1\/presence\/([^/]+)$/
 
 type ReactionResponse = {
   messageId: string
@@ -104,6 +124,10 @@ function shouldProxyMessaging(_ctx: RouteContext): boolean {
 
 function shouldProxyMedia(_ctx: RouteContext): boolean {
   return preferMediaServiceProxy
+}
+
+function shouldProxyPresence(_ctx: RouteContext): boolean {
+  return preferPresenceServiceProxy
 }
 
 async function proxyToService(
@@ -203,6 +227,7 @@ async function publishRealtimeFromMessagingProxy(
       }
 
       ctx.realtimeHub.publishMessageCreated(payload, recipients)
+      await enqueueMessageNotificationsBestEffort(payload, ctx)
     }
     return
   }
@@ -259,6 +284,33 @@ async function publishRealtimeFromMessagingProxy(
   }
 }
 
+async function publishRealtimeFromPresenceProxy(
+  pathname: string,
+  method: string,
+  response: Response,
+  ctx: RouteContext
+): Promise<void> {
+  if (!response.ok) {
+    return
+  }
+
+  const upperMethod = method.toUpperCase()
+  if (!(upperMethod === "PUT" && presenceRoute.test(pathname))) {
+    return
+  }
+
+  const payload = await parseProxiedJson<PresenceState>(response)
+  if (!payload?.userId) {
+    return
+  }
+
+  const friends = await ctx.store.listFriends(payload.userId)
+  ctx.realtimeHub.publishPresenceUpdated(
+    payload,
+    friends.map((friend) => friend.id)
+  )
+}
+
 export async function routeRequest(request: Request, ctx: RouteContext): Promise<Response> {
   if (request.method === "OPTIONS") {
     return new Response(null, {
@@ -269,8 +321,37 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
 
   const { pathname } = new URL(request.url)
 
+  const rateLimit = checkRateLimit(request)
+  if (!rateLimit.allowed) {
+    return new Response(JSON.stringify({ error: "Rate limit exceeded." }), {
+      status: 429,
+      headers: {
+        ...corsHeaders(ctx.corsOrigin),
+        "Content-Type": "application/json",
+        "Retry-After": String(rateLimit.retryAfterSeconds)
+      }
+    })
+  }
+
   if (pathname === "/health" && request.method === "GET") {
     return json(ctx.corsOrigin, 200, createHealthResponse(ctx.service))
+  }
+
+  if (
+    (presenceRoute.test(pathname) && request.method === "PUT") ||
+    (presenceMeRoute.test(pathname) && request.method === "GET") ||
+    (presenceBulkRoute.test(pathname) && request.method === "POST") ||
+    (presenceUserRoute.test(pathname) && request.method === "GET")
+  ) {
+    if (shouldProxyPresence(ctx)) {
+      const proxied = await proxyToService(presenceServiceUrl, request, ctx)
+      if (proxied) {
+        await publishRealtimeFromPresenceProxy(pathname, request.method, proxied, ctx)
+        return proxied
+      }
+    }
+
+    return error(ctx.corsOrigin, 503, "Presence service unavailable.")
   }
 
   if (attachmentsRoute.test(pathname) && request.method === "POST") {
@@ -406,6 +487,23 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
     return await handleRespondFriendRequest(request, friendRequestMatch[1], ctx)
   }
 
+  if (pathname === "/v1/search" && request.method === "GET") {
+    return await handleSearch(request, ctx)
+  }
+
+  if (pushSubscriptionsRoute.test(pathname) && request.method === "POST") {
+    return await handleCreatePushSubscription(request, ctx)
+  }
+
+  if (pushSubscriptionsRoute.test(pathname) && request.method === "GET") {
+    return await handleListPushSubscriptions(request, ctx)
+  }
+
+  const pushSubscriptionMatch = pathname.match(pushSubscriptionRoute)
+  if (pushSubscriptionMatch?.[1] && request.method === "DELETE") {
+    return await handleDeletePushSubscription(request, pushSubscriptionMatch[1], ctx)
+  }
+
   const serverChannelsMatch = pathname.match(serverChannelsRoute)
   if (serverChannelsMatch?.[1] && request.method === "POST") {
     if (shouldProxyCommunity(ctx)) {
@@ -489,6 +587,28 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       }
     }
     return await handleCreateServerInvite(request, serverInvitesMatch[1], ctx)
+  }
+
+  const serverModerationActionsMatch = pathname.match(serverModerationActionsRoute)
+  if (serverModerationActionsMatch?.[1] && request.method === "POST") {
+    if (shouldProxyCommunity(ctx)) {
+      const proxied = await proxyToService(communityServiceUrl, request, ctx)
+      if (proxied && proxied.status !== 404) {
+        return proxied
+      }
+    }
+    return await handleCreateModerationAction(request, serverModerationActionsMatch[1], ctx)
+  }
+
+  const serverAuditLogsMatch = pathname.match(serverAuditLogsRoute)
+  if (serverAuditLogsMatch?.[1] && request.method === "GET") {
+    if (shouldProxyCommunity(ctx)) {
+      const proxied = await proxyToService(communityServiceUrl, request, ctx)
+      if (proxied && proxied.status !== 404) {
+        return proxied
+      }
+    }
+    return await handleListAuditLogs(request, serverAuditLogsMatch[1], ctx)
   }
 
   if (directThreadsRoute.test(pathname) && request.method === "POST") {
@@ -708,6 +828,10 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       "POST /v1/auth/register",
       "POST /v1/auth/login",
       "GET /v1/me",
+      "PUT /v1/presence",
+      "GET /v1/presence/me",
+      "POST /v1/presence/bulk",
+      "GET /v1/presence/:userId",
       "GET /v1/users/search?q=term",
       "GET /v1/users/:userId",
       "GET /v1/friends",
@@ -715,6 +839,10 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       "GET /v1/friends/requests",
       "POST /v1/friends/requests",
       "POST /v1/friends/requests/:requestId",
+      "GET /v1/search?q=term",
+      "POST /v1/notifications/push-subscriptions",
+      "GET /v1/notifications/push-subscriptions",
+      "DELETE /v1/notifications/push-subscriptions/:subscriptionId",
       "POST /v1/servers",
       "GET /v1/servers",
       "POST /v1/servers/:serverId/channels",
@@ -725,6 +853,8 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       "POST /v1/servers/:serverId/roles",
       "POST /v1/servers/:serverId/roles/assign",
       "POST /v1/servers/:serverId/invites",
+      "POST /v1/servers/:serverId/moderation/actions",
+      "GET /v1/servers/:serverId/audit-logs",
       "POST /v1/direct-threads",
       "GET /v1/direct-threads",
       "POST /v1/direct-threads/:threadId/messages",

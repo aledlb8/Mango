@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react"
 import type { Channel, Server } from "@/lib/api"
-import { Check, ChevronDown, Copy, Hash, Link, Plus } from "lucide-react"
+import { ChevronDown, Copy, Hash, Link, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 

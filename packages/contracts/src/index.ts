@@ -174,6 +174,81 @@ export type TypingIndicator = {
   expiresAt: string;
 };
 
+export type PresenceStatus = "online" | "idle" | "dnd" | "offline";
+
+export type PresenceState = {
+  userId: string;
+  status: PresenceStatus;
+  lastSeenAt: string;
+  expiresAt: string | null;
+};
+
+export type UpdatePresenceRequest = {
+  status?: Exclude<PresenceStatus, "offline">;
+};
+
+export type BulkPresenceRequest = {
+  userIds: string[];
+};
+
+export type ModerationActionType = "kick" | "ban" | "timeout" | "unban";
+
+export type ModerationAction = {
+  id: string;
+  serverId: string;
+  actorId: string;
+  targetUserId: string;
+  actionType: ModerationActionType;
+  reason: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+};
+
+export type CreateModerationActionRequest = {
+  targetUserId: string;
+  actionType: ModerationActionType;
+  reason?: string;
+  durationMinutes?: number;
+};
+
+export type AuditLogEntry = {
+  id: string;
+  serverId: string;
+  actorId: string | null;
+  targetUserId: string | null;
+  actionType: string;
+  reason: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type SearchScope = "all" | "messages" | "users" | "channels";
+
+export type SearchResults = {
+  users: User[];
+  channels: Channel[];
+  messages: Message[];
+};
+
+export type PushSubscription = {
+  id: string;
+  userId: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  userAgent: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreatePushSubscriptionRequest = {
+  endpoint: string;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+};
+
 export type CreateServerRequest = {
   name: string;
 };
@@ -295,6 +370,10 @@ export type RealtimeServerMessage =
   | {
       type: "typing.updated";
       payload: TypingIndicator;
+    }
+  | {
+      type: "presence.updated";
+      payload: PresenceState;
     }
   | {
       type: "pong";

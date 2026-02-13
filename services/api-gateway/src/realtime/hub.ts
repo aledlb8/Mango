@@ -2,6 +2,7 @@ import type {
   DirectThread,
   Message,
   MessageDeletedEvent,
+  PresenceState,
   MessageReactionSummary,
   TypingIndicator
 } from "@mango/contracts"
@@ -178,5 +179,34 @@ export class RealtimeHub {
       type: "typing.updated",
       payload
     })
+  }
+
+  publishPresenceUpdated(payload: PresenceState, recipientUserIds: string[]): void {
+    const targets = new Set<ServerWebSocket<SocketData>>()
+    const recipients = new Set<string>([payload.userId, ...recipientUserIds])
+
+    for (const userId of recipients) {
+      const sockets = this.userSockets.get(userId)
+      if (!sockets) {
+        continue
+      }
+
+      for (const socket of sockets) {
+        targets.add(socket)
+      }
+    }
+
+    if (targets.size === 0) {
+      return
+    }
+
+    const encoded = stringify({
+      type: "presence.updated",
+      payload
+    })
+
+    for (const socket of targets) {
+      socket.send(encoded)
+    }
   }
 }

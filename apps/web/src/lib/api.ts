@@ -24,6 +24,17 @@ export type FriendRequest = {
   respondedAt: string | null
 }
 
+export type WebPushSubscription = {
+  id: string
+  userId: string
+  endpoint: string
+  p256dh: string
+  auth: string
+  userAgent: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 export type Server = {
   id: string
   name: string
@@ -124,6 +135,15 @@ export type TypingIndicator = {
   expiresAt: string
 }
 
+export type PresenceStatus = "online" | "idle" | "dnd" | "offline"
+
+export type PresenceState = {
+  userId: string
+  status: PresenceStatus
+  lastSeenAt: string
+  expiresAt: string | null
+}
+
 type RequestOptions = {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
   token?: string | null
@@ -172,6 +192,33 @@ export function getMe(token: string) {
   return request<User>("/v1/me", { token })
 }
 
+export function updateMyPresence(
+  token: string,
+  payload: { status?: "online" | "idle" | "dnd" } = {}
+) {
+  return request<PresenceState>("/v1/presence", {
+    method: "PUT",
+    token,
+    body: payload
+  })
+}
+
+export function getMyPresence(token: string) {
+  return request<PresenceState>("/v1/presence/me", { token })
+}
+
+export function getPresence(token: string, userId: string) {
+  return request<PresenceState>(`/v1/presence/${encodeURIComponent(userId)}`, { token })
+}
+
+export function getBulkPresence(token: string, userIds: string[]) {
+  return request<PresenceState[]>("/v1/presence/bulk", {
+    method: "POST",
+    token,
+    body: { userIds }
+  })
+}
+
 export function getUserById(token: string, userId: string) {
   return request<User>(`/v1/users/${encodeURIComponent(userId)}`, { token })
 }
@@ -217,6 +264,28 @@ export function respondFriendRequest(
     method: "POST",
     token,
     body: payload
+  })
+}
+
+export function createPushSubscription(
+  token: string,
+  payload: { endpoint: string; keys: { p256dh: string; auth: string } }
+) {
+  return request<WebPushSubscription>("/v1/notifications/push-subscriptions", {
+    method: "POST",
+    token,
+    body: payload
+  })
+}
+
+export function listPushSubscriptions(token: string) {
+  return request<WebPushSubscription[]>("/v1/notifications/push-subscriptions", { token })
+}
+
+export function deletePushSubscription(token: string, subscriptionId: string) {
+  return request<{ status: "ok" }>(`/v1/notifications/push-subscriptions/${encodeURIComponent(subscriptionId)}`, {
+    method: "DELETE",
+    token
   })
 }
 

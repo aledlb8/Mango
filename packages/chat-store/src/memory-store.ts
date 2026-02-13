@@ -1,4 +1,5 @@
 import type {
+  AuditLogEntry,
   Attachment,
   Channel,
   ChannelPermissionOverwrite,
@@ -7,9 +8,14 @@ import type {
   Message,
   MessageDeletedEvent,
   MessageReactionSummary,
+  ModerationAction,
+  ModerationActionType,
   Permission,
+  PushSubscription,
   ReadMarker,
   Role,
+  SearchResults,
+  SearchScope,
   ServerInvite,
   Server,
   User
@@ -48,6 +54,13 @@ type MemoryState = {
   reactionUsersByMessageId: Map<string, Map<string, Set<string>>>
   friendsByUserId: Map<string, Set<string>>
   friendRequestsById: Map<string, FriendRequest>
+  bansByServerId: Map<string, Set<string>>
+  timeoutsByServerUser: Map<string, { mutedBy: string; reason: string | null; expiresAt: string; createdAt: string }>
+  moderationActionsById: Map<string, ModerationAction>
+  auditLogsByServerId: Map<string, AuditLogEntry[]>
+  pushSubscriptionsById: Map<string, PushSubscription>
+  pushSubscriptionIdsByUserId: Map<string, string[]>
+  notificationQueue: Array<{ id: string; userId: string; title: string; body: string; url: string | null; createdAt: string }>
   invitesByCode: Map<string, ServerInvite>
 }
 
@@ -77,6 +90,13 @@ function createMemoryState(): MemoryState {
     reactionUsersByMessageId: new Map<string, Map<string, Set<string>>>(),
     friendsByUserId: new Map<string, Set<string>>(),
     friendRequestsById: new Map<string, FriendRequest>(),
+    bansByServerId: new Map<string, Set<string>>(),
+    timeoutsByServerUser: new Map<string, { mutedBy: string; reason: string | null; expiresAt: string; createdAt: string }>(),
+    moderationActionsById: new Map<string, ModerationAction>(),
+    auditLogsByServerId: new Map<string, AuditLogEntry[]>(),
+    pushSubscriptionsById: new Map<string, PushSubscription>(),
+    pushSubscriptionIdsByUserId: new Map<string, string[]>(),
+    notificationQueue: [],
     invitesByCode: new Map<string, ServerInvite>()
   }
 }
@@ -502,6 +522,10 @@ export class MemoryStore implements AppStore {
   }
 
   async addServerMember(serverId: string, userId: string): Promise<void> {
+    if (await this.isUserBanned(serverId, userId)) {
+      throw new Error("User is banned from this server.")
+    }
+
     const members = this.state.membersByServerId.get(serverId) ?? new Set<string>()
     members.add(userId)
     this.state.membersByServerId.set(serverId, members)
@@ -530,7 +554,7 @@ export class MemoryStore implements AppStore {
     const roles = await this.listRoles(serverId)
     const memberRoleIds = Array.from(this.state.memberRoleIdsByServerUser.get(memberRoleKey(serverId, userId)) ?? [])
 
-    return hasPermissionAfterOverwrites({
+    const hasPermission = hasPermissionAfterOverwrites({
       permission,
       server,
       userId,
@@ -539,6 +563,16 @@ export class MemoryStore implements AppStore {
       overwrites: [],
       includeChannelOverwrites: false
     })
+
+    if (!hasPermission) {
+      return false
+    }
+
+    if (permission === "send_messages" && (await this.isUserTimedOut(serverId, userId))) {
+      return false
+    }
+
+    return true
   }
 
   async listServerMembers(serverId: string): Promise<User[]> {
@@ -554,6 +588,110 @@ export class MemoryStore implements AppStore {
     }
 
     return users
+  }
+
+  async isUserBanned(serverId: string, userId: string): Promise<boolean> {
+    const bans = this.state.bansByServerId.get(serverId)
+    return bans ? bans.has(userId) : false
+  }
+
+  async isUserTimedOut(serverId: string, userId: string): Promise<boolean> {
+    const key = memberRoleKey(serverId, userId)
+    const timeout = this.state.timeoutsByServerUser.get(key)
+    if (!timeout) {
+      return false
+    }
+
+    const expiresAt = new Date(timeout.expiresAt).getTime()
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      this.state.timeoutsByServerUser.delete(key)
+      return false
+    }
+
+    return true
+  }
+
+  async createModerationAction(
+    serverId: string,
+    actorId: string,
+    targetUserId: string,
+    actionType: ModerationActionType,
+    reason: string | null,
+    expiresAt: string | null
+  ): Promise<ModerationAction> {
+    const createdAt = new Date().toISOString()
+    const action: ModerationAction = {
+      id: createId("mod"),
+      serverId,
+      actorId,
+      targetUserId,
+      actionType,
+      reason,
+      expiresAt,
+      createdAt
+    }
+
+    if (actionType === "kick") {
+      const members = this.state.membersByServerId.get(serverId) ?? new Set<string>()
+      members.delete(targetUserId)
+      this.state.membersByServerId.set(serverId, members)
+      this.state.memberRoleIdsByServerUser.delete(memberRoleKey(serverId, targetUserId))
+      this.state.timeoutsByServerUser.delete(memberRoleKey(serverId, targetUserId))
+    } else if (actionType === "ban") {
+      const bans = this.state.bansByServerId.get(serverId) ?? new Set<string>()
+      bans.add(targetUserId)
+      this.state.bansByServerId.set(serverId, bans)
+
+      const members = this.state.membersByServerId.get(serverId) ?? new Set<string>()
+      members.delete(targetUserId)
+      this.state.membersByServerId.set(serverId, members)
+      this.state.memberRoleIdsByServerUser.delete(memberRoleKey(serverId, targetUserId))
+      this.state.timeoutsByServerUser.delete(memberRoleKey(serverId, targetUserId))
+    } else if (actionType === "timeout") {
+      if (!expiresAt) {
+        throw new Error("Timeout requires expiresAt.")
+      }
+
+      this.state.timeoutsByServerUser.set(memberRoleKey(serverId, targetUserId), {
+        mutedBy: actorId,
+        reason,
+        expiresAt,
+        createdAt
+      })
+    } else if (actionType === "unban") {
+      const bans = this.state.bansByServerId.get(serverId)
+      bans?.delete(targetUserId)
+      if (bans && bans.size === 0) {
+        this.state.bansByServerId.delete(serverId)
+      }
+    }
+
+    this.state.moderationActionsById.set(action.id, action)
+
+    const auditLog: AuditLogEntry = {
+      id: createId("aud"),
+      serverId,
+      actorId,
+      targetUserId,
+      actionType: `moderation.${actionType}`,
+      reason,
+      metadata: {
+        moderationActionId: action.id,
+        expiresAt
+      },
+      createdAt
+    }
+
+    const logs = this.state.auditLogsByServerId.get(serverId) ?? []
+    logs.unshift(auditLog)
+    this.state.auditLogsByServerId.set(serverId, logs)
+
+    return { ...action }
+  }
+
+  async listAuditLogs(serverId: string, limit: number): Promise<AuditLogEntry[]> {
+    const logs = this.state.auditLogsByServerId.get(serverId) ?? []
+    return logs.slice(0, Math.max(1, limit)).map((entry) => ({ ...entry, metadata: { ...entry.metadata } }))
   }
 
   async createChannel(serverId: string, name: string): Promise<Channel> {
@@ -614,7 +752,7 @@ export class MemoryStore implements AppStore {
     const memberRoleIds = Array.from(this.state.memberRoleIdsByServerUser.get(memberRoleKey(server.id, userId)) ?? [])
     const overwrites = await this.listChannelOverwrites(channelId)
 
-    return hasPermissionAfterOverwrites({
+    const hasPermission = hasPermissionAfterOverwrites({
       permission,
       server,
       userId,
@@ -623,6 +761,16 @@ export class MemoryStore implements AppStore {
       overwrites,
       includeChannelOverwrites: true
     })
+
+    if (!hasPermission) {
+      return false
+    }
+
+    if (permission === "send_messages" && (await this.isUserTimedOut(server.id, userId))) {
+      return false
+    }
+
+    return true
   }
 
   async createMessage(channelId: string, authorId: string, body: string, attachments: Attachment[] = []): Promise<Message> {
@@ -842,6 +990,182 @@ export class MemoryStore implements AppStore {
     return [...(this.state.overwritesByChannelId.get(channelId) ?? [])]
   }
 
+  async createPushSubscription(
+    userId: string,
+    endpoint: string,
+    p256dh: string,
+    auth: string,
+    userAgent: string | null
+  ): Promise<PushSubscription> {
+    const existingId = (this.state.pushSubscriptionIdsByUserId.get(userId) ?? []).find((subscriptionId) => {
+      const existing = this.state.pushSubscriptionsById.get(subscriptionId)
+      return existing?.endpoint === endpoint
+    })
+
+    if (existingId) {
+      const existing = this.state.pushSubscriptionsById.get(existingId)
+      if (existing) {
+        existing.p256dh = p256dh
+        existing.auth = auth
+        existing.userAgent = userAgent
+        existing.updatedAt = new Date().toISOString()
+        this.state.pushSubscriptionsById.set(existing.id, existing)
+        return { ...existing }
+      }
+    }
+
+    const created: PushSubscription = {
+      id: createId("psh"),
+      userId,
+      endpoint,
+      p256dh,
+      auth,
+      userAgent,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }
+
+    this.state.pushSubscriptionsById.set(created.id, created)
+    const ids = this.state.pushSubscriptionIdsByUserId.get(userId) ?? []
+    ids.push(created.id)
+    this.state.pushSubscriptionIdsByUserId.set(userId, ids)
+    return { ...created }
+  }
+
+  async listPushSubscriptions(userId: string): Promise<PushSubscription[]> {
+    const ids = this.state.pushSubscriptionIdsByUserId.get(userId) ?? []
+    return ids
+      .map((id) => this.state.pushSubscriptionsById.get(id))
+      .filter((subscription): subscription is PushSubscription => Boolean(subscription))
+      .map((subscription) => ({ ...subscription }))
+  }
+
+  async deletePushSubscription(userId: string, subscriptionId: string): Promise<boolean> {
+    const subscription = this.state.pushSubscriptionsById.get(subscriptionId)
+    if (!subscription || subscription.userId !== userId) {
+      return false
+    }
+
+    this.state.pushSubscriptionsById.delete(subscriptionId)
+    const ids = this.state.pushSubscriptionIdsByUserId.get(userId) ?? []
+    this.state.pushSubscriptionIdsByUserId.set(
+      userId,
+      ids.filter((id) => id !== subscriptionId)
+    )
+    return true
+  }
+
+  async enqueueNotification(userId: string, title: string, body: string, url: string | null): Promise<void> {
+    this.state.notificationQueue.push({
+      id: createId("ntf"),
+      userId,
+      title,
+      body,
+      url,
+      createdAt: new Date().toISOString()
+    })
+  }
+
+  async searchChannels(
+    query: string,
+    userId: string,
+    serverId: string | null,
+    limit: number
+  ): Promise<Channel[]> {
+    const normalized = query.trim().toLowerCase()
+    if (!normalized) {
+      return []
+    }
+
+    const max = Math.max(1, Math.min(limit, 100))
+    const channels = Array.from(this.state.channelsById.values())
+      .filter((channel) => !this.state.hiddenChannelIds.has(channel.id))
+      .filter((channel) => (serverId ? channel.serverId === serverId : true))
+      .filter((channel) => channel.name.toLowerCase().includes(normalized))
+
+    const visible: Channel[] = []
+    for (const channel of channels) {
+      if (!(await this.hasChannelPermission(channel.id, userId, "read_messages"))) {
+        continue
+      }
+      visible.push(channel)
+      if (visible.length >= max) {
+        break
+      }
+    }
+
+    return visible
+  }
+
+  async searchMessages(
+    query: string,
+    userId: string,
+    serverId: string | null,
+    limit: number
+  ): Promise<Message[]> {
+    const normalized = query.trim().toLowerCase()
+    if (!normalized) {
+      return []
+    }
+
+    const max = Math.max(1, Math.min(limit, 100))
+    const sortedMessages = Array.from(this.state.messagesById.values()).sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt)
+    )
+
+    const matches: Message[] = []
+    for (const message of sortedMessages) {
+      if (!message.body.toLowerCase().includes(normalized)) {
+        continue
+      }
+
+      const channel = this.state.channelsById.get(message.channelId)
+      if (!channel) {
+        continue
+      }
+
+      if (serverId && channel.serverId !== serverId) {
+        continue
+      }
+
+      if (!(await this.hasChannelPermission(channel.id, userId, "read_messages"))) {
+        continue
+      }
+
+      matches.push(cloneMessage(message))
+      if (matches.length >= max) {
+        break
+      }
+    }
+
+    return matches
+  }
+
+  async search(
+    query: string,
+    userId: string,
+    scope: SearchScope,
+    serverId: string | null,
+    limit: number
+  ): Promise<SearchResults> {
+    const max = Math.max(1, Math.min(limit, 100))
+    const users = scope === "all" || scope === "users" ? await this.searchUsers(query, userId) : []
+    const channels =
+      scope === "all" || scope === "channels"
+        ? await this.searchChannels(query, userId, serverId, max)
+        : []
+    const messages =
+      scope === "all" || scope === "messages"
+        ? await this.searchMessages(query, userId, serverId, max)
+        : []
+
+    return {
+      users: users.slice(0, max),
+      channels: channels.slice(0, max),
+      messages: messages.slice(0, max)
+    }
+  }
+
   async createServerInvite(
     serverId: string,
     createdBy: string,
@@ -883,6 +1207,10 @@ export class MemoryStore implements AppStore {
 
     const server = await this.getServerById(invite.serverId)
     if (!server) {
+      return null
+    }
+
+    if (await this.isUserBanned(server.id, userId)) {
       return null
     }
 

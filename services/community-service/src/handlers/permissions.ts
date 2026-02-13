@@ -159,7 +159,15 @@ export async function handleAddServerMember(
     return error(ctx.corsOrigin, 404, "User not found.")
   }
 
-  await ctx.store.addServerMember(serverId, member.id)
+  try {
+    await ctx.store.addServerMember(serverId, member.id)
+  } catch (reason) {
+    const message = reason instanceof Error ? reason.message.toLowerCase() : ""
+    if (message.includes("banned")) {
+      return error(ctx.corsOrigin, 403, "User is banned from this server.")
+    }
+    throw reason
+  }
   return json(ctx.corsOrigin, 200, { status: "ok" })
 }
 

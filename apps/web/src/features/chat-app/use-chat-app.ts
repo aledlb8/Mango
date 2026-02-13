@@ -7,10 +7,12 @@ import {
   createChannel,
   createDirectThread,
   createDirectThreadMessage,
+  createPushSubscription,
   createMessage,
   createServer,
   createServerInvite,
   deleteMessage,
+  getBulkPresence,
   getMe,
   getUserById,
   joinServerByInvite,
@@ -31,6 +33,7 @@ import {
   sendDirectThreadTyping,
   updateChannelReadMarker,
   updateDirectThreadReadMarker,
+  updateMyPresence,
   updateMessage,
   uploadAttachment,
   type Attachment,
@@ -38,6 +41,7 @@ import {
   type DirectThread,
   type FriendRequest,
   type Message,
+  type PresenceState,
   type Server,
   type User
 } from "@/lib/api"
@@ -52,6 +56,20 @@ import {
   upsertServer
 } from "./state-utils"
 
+function urlBase64ToArrayBuffer(base64String: string): ArrayBuffer {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4)
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/")
+  const rawData = atob(base64)
+  const buffer = new ArrayBuffer(rawData.length)
+  const outputArray = new Uint8Array(buffer)
+
+  for (let index = 0; index < rawData.length; index += 1) {
+    outputArray[index] = rawData.charCodeAt(index)
+  }
+
+  return buffer
+}
+
 export function useChatApp() {
   const [token, setToken] = useState<string | null>(null)
   const [me, setMe] = useState<User | null>(null)
@@ -63,6 +81,7 @@ export function useChatApp() {
   const [usersById, setUsersById] = useState<Record<string, User>>({})
 
   const [friends, setFriends] = useState<User[]>([])
+  const [presenceByUserId, setPresenceByUserId] = useState<Record<string, PresenceState>>({})
   const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([])
   const [friendSearchResults, setFriendSearchResults] = useState<User[]>([])
 
@@ -155,6 +174,7 @@ export function useChatApp() {
       setMessages([])
       setUsersById({})
       setFriends([])
+      setPresenceByUserId({})
       setFriendRequests([])
       setFriendSearchResults([])
       setSelectedServerId(null)
@@ -321,6 +341,129 @@ export function useChatApp() {
       cancelled = true
     }
   }, [token, messages, usersById])
+
+  useEffect(() => {
+    if (!token || !me) {
+      return
+    }
+
+    let cancelled = false
+    const publishPresence = () => {
+      void updateMyPresence(token, { status: "online" })
+        .then((presence) => {
+          if (cancelled) {
+            return
+          }
+
+          setPresenceByUserId((current) => ({
+            ...current,
+            [presence.userId]: presence
+          }))
+        })
+        .catch(() => {})
+    }
+
+    publishPresence()
+    const interval = setInterval(publishPresence, 30_000)
+
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [token, me])
+
+  useEffect(() => {
+    if (!token || typeof window === "undefined") {
+      return
+    }
+
+    if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+      return
+    }
+
+    const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? ""
+    if (!vapidPublicKey) {
+      return
+    }
+
+    let cancelled = false
+
+    void (async () => {
+      try {
+        const registration = await navigator.serviceWorker.register("/sw.js")
+        const permission = await Notification.requestPermission()
+        if (permission !== "granted" || cancelled) {
+          return
+        }
+
+        let subscription = await registration.pushManager.getSubscription()
+        if (!subscription) {
+          subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToArrayBuffer(vapidPublicKey)
+          })
+        }
+
+        if (cancelled) {
+          return
+        }
+
+        const payload = subscription.toJSON()
+        if (!payload.endpoint || !payload.keys?.p256dh || !payload.keys.auth) {
+          return
+        }
+
+        await createPushSubscription(token, {
+          endpoint: payload.endpoint,
+          keys: {
+            p256dh: payload.keys.p256dh,
+            auth: payload.keys.auth
+          }
+        })
+      } catch {
+        // Push subscription is best effort.
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [token])
+
+  useEffect(() => {
+    if (!token || friends.length === 0) {
+      return
+    }
+
+    let cancelled = false
+    const userIds = friends.map((friend) => friend.id)
+
+    const fetchPresence = () => {
+      void getBulkPresence(token, userIds)
+        .then((presenceStates) => {
+          if (cancelled) {
+            return
+          }
+
+          setPresenceByUserId((current) => {
+            const next = { ...current }
+            for (const state of presenceStates) {
+              next[state.userId] = state
+            }
+            return next
+          })
+        })
+        .catch(() => {})
+    }
+
+    fetchPresence()
+    const interval = setInterval(fetchPresence, 15_000)
+
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [token, friends])
 
   useEffect(() => {
     if (!token || !me || friendRequests.length === 0) {
@@ -513,6 +656,14 @@ export function useChatApp() {
               [conversationId]: Array.from(users)
             }
           })
+          return
+        }
+
+        if (message.type === "presence.updated") {
+          setPresenceByUserId((current) => ({
+            ...current,
+            [message.payload.userId]: message.payload
+          }))
         }
       }
 
@@ -1086,6 +1237,10 @@ export function useChatApp() {
     return userId
   }
 
+  function getUserPresenceStatus(userId: string): PresenceState["status"] {
+    return presenceByUserId[userId]?.status ?? "offline"
+  }
+
   function handleSelectFriendsView(): void {
     setSelectedServerId(null)
     setSelectedDirectThreadId(null)
@@ -1126,6 +1281,7 @@ export function useChatApp() {
     directThreads,
     messages: stableMessages,
     friends,
+    presenceByUserId,
     friendRequests,
     friendSearchResults,
     selectedServer,
@@ -1189,6 +1345,7 @@ export function useChatApp() {
     handleRemoveReaction,
     getAuthorLabel,
     getUserLabel,
+    getUserPresenceStatus,
     getDirectThreadLabel,
     getDirectThreadAvatar
   }

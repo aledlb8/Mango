@@ -83,6 +83,7 @@ export default function Home() {
           onRespondToFriendRequest={app.handleRespondToFriendRequest}
           onOpenDirectThread={app.handleOpenDirectThread}
           getUserLabel={app.getUserLabel}
+          getUserPresenceStatus={app.getUserPresenceStatus}
         />
       ) : (
         <ChatThread

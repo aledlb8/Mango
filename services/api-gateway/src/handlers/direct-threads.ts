@@ -4,6 +4,7 @@ import { readJson } from "../http/request"
 import { error, json } from "../http/response"
 import type { RouteContext } from "../router-context"
 import { normalizeAttachments } from "./message-attachments"
+import { enqueueMessageNotificationsBestEffort } from "./notification-dispatch"
 import { requireDirectThreadParticipant } from "./direct-threads-common"
 
 function normalizeParticipantIds(participantIds: string[] | undefined, ownerId: string): string[] {
@@ -86,6 +87,7 @@ export async function handleCreateDirectThreadMessage(
   const attachments = normalizeAttachments(body.attachments, access.user.id)
   const created: Message = await ctx.store.createMessage(access.thread.channelId, access.user.id, text, attachments)
   ctx.realtimeHub.publishMessageCreated(created, access.thread.participantIds)
+  await enqueueMessageNotificationsBestEffort(created, ctx)
 
   return json(ctx.corsOrigin, 201, created)
 }

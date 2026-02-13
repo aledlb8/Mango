@@ -1,18 +1,24 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test"
+import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from "bun:test"
 import type {
+  AuditLogEntry,
   AddReactionRequest,
   Attachment,
   AuthResponse,
   Channel,
   ChannelPermissionOverwrite,
   CreateMessageRequest,
+  CreateModerationActionRequest,
   CreateRoleRequest,
   CreateServerRequest,
   DirectThread,
   FriendRequest,
   Message,
+  ModerationAction,
+  PresenceState,
+  PushSubscription,
   ReadMarker,
   Role,
+  SearchResults,
   Server,
   ServerInvite,
   TypingIndicator,
@@ -24,6 +30,8 @@ import { routeRequest as routeCommunityRequest } from "../../community-service/s
 import { routeRequest as routeIdentityRequest } from "../../identity-service/src/router"
 import { routeRequest as routeMessagingRequest } from "../../messaging-service/src/router"
 
+setDefaultTimeout(15_000)
+
 type GatewayRouteFn = (request: Request, ctx: unknown) => Promise<Response>
 
 type ServiceHits = {
@@ -31,6 +39,7 @@ type ServiceHits = {
   community: number
   messaging: number
   media: number
+  presence: number
 }
 
 type SocketEvent = {
@@ -53,13 +62,15 @@ const serviceHits: ServiceHits = {
   identity: 0,
   community: 0,
   messaging: 0,
-  media: 0
+  media: 0,
+  presence: 0
 }
 
 let identityServer: ReturnType<typeof Bun.serve> | null = null
 let communityServer: ReturnType<typeof Bun.serve> | null = null
 let messagingServer: ReturnType<typeof Bun.serve> | null = null
 let mediaServer: ReturnType<typeof Bun.serve> | null = null
+let presenceServer: ReturnType<typeof Bun.serve> | null = null
 let routeGatewayRequest: GatewayRouteFn
 const mediaAttachmentsById = new Map<string, Attachment>()
 
@@ -68,10 +79,13 @@ const originalEnv = {
   COMMUNITY_SERVICE_URL: process.env.COMMUNITY_SERVICE_URL,
   MESSAGING_SERVICE_URL: process.env.MESSAGING_SERVICE_URL,
   MEDIA_SERVICE_URL: process.env.MEDIA_SERVICE_URL,
+  PRESENCE_SERVICE_URL: process.env.PRESENCE_SERVICE_URL,
   PREFER_IDENTITY_SERVICE_PROXY: process.env.PREFER_IDENTITY_SERVICE_PROXY,
   PREFER_COMMUNITY_SERVICE_PROXY: process.env.PREFER_COMMUNITY_SERVICE_PROXY,
   PREFER_MESSAGING_SERVICE_PROXY: process.env.PREFER_MESSAGING_SERVICE_PROXY,
-  PREFER_MEDIA_SERVICE_PROXY: process.env.PREFER_MEDIA_SERVICE_PROXY
+  PREFER_MEDIA_SERVICE_PROXY: process.env.PREFER_MEDIA_SERVICE_PROXY,
+  PREFER_PRESENCE_SERVICE_PROXY: process.env.PREFER_PRESENCE_SERVICE_PROXY,
+  DISABLE_RATE_LIMITING: process.env.DISABLE_RATE_LIMITING
 }
 
 function restoreEnv(): void {
@@ -279,20 +293,107 @@ describe("api-gateway proxy integration", () => {
       }
     })
 
+    presenceServer = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        serviceHits.presence += 1
+
+        const { pathname } = new URL(request.url)
+        if (pathname === "/health") {
+          return Response.json({
+            service: "presence-service",
+            status: "ok",
+            timestamp: new Date().toISOString()
+          })
+        }
+
+        const authorization = request.headers.get("authorization") ?? ""
+        const bearer = authorization.startsWith("Bearer ")
+          ? authorization.slice("Bearer ".length).trim()
+          : ""
+        if (!bearer) {
+          return Response.json({ error: "Unauthorized." }, { status: 401 })
+        }
+
+        const userId = await store.getUserIdByToken(bearer)
+        if (!userId) {
+          return Response.json({ error: "Unauthorized." }, { status: 401 })
+        }
+
+        if (pathname === "/v1/presence" && request.method === "PUT") {
+          const payload = (await request.json().catch(() => null)) as { status?: string } | null
+          const statusRaw = payload?.status ?? "online"
+          if (!["online", "idle", "dnd"].includes(statusRaw)) {
+            return Response.json({ error: "Invalid status." }, { status: 400 })
+          }
+          const status = statusRaw as PresenceState["status"]
+
+          return Response.json({
+            userId,
+            status,
+            lastSeenAt: new Date().toISOString(),
+            expiresAt: new Date(Date.now() + 30_000).toISOString()
+          } satisfies PresenceState)
+        }
+
+        if (pathname === "/v1/presence/me" && request.method === "GET") {
+          return Response.json({
+            userId,
+            status: "online",
+            lastSeenAt: new Date().toISOString(),
+            expiresAt: new Date(Date.now() + 30_000).toISOString()
+          } satisfies PresenceState)
+        }
+
+        if (pathname === "/v1/presence/bulk" && request.method === "POST") {
+          const payload = (await request.json().catch(() => null)) as { userIds?: string[] } | null
+          const userIds = Array.isArray(payload?.userIds) ? payload.userIds : []
+          return Response.json(
+            userIds.map((targetUserId) => ({
+              userId: targetUserId,
+              status: targetUserId === userId ? "online" : "offline",
+              lastSeenAt: new Date().toISOString(),
+              expiresAt: targetUserId === userId ? new Date(Date.now() + 30_000).toISOString() : null
+            } satisfies PresenceState))
+          )
+        }
+
+        if (pathname.startsWith("/v1/presence/") && request.method === "GET") {
+          const targetUserId = decodeURIComponent(pathname.replace("/v1/presence/", "").trim())
+          if (!targetUserId) {
+            return Response.json({ error: "userId is required." }, { status: 400 })
+          }
+
+          return Response.json({
+            userId: targetUserId,
+            status: targetUserId === userId ? "online" : "offline",
+            lastSeenAt: new Date().toISOString(),
+            expiresAt: targetUserId === userId ? new Date(Date.now() + 30_000).toISOString() : null
+          } satisfies PresenceState)
+        }
+
+        return Response.json({ error: "Route not found." }, { status: 404 })
+      }
+    })
+
     process.env.IDENTITY_SERVICE_URL = `http://127.0.0.1:${identityServer.port}`
     process.env.COMMUNITY_SERVICE_URL = `http://127.0.0.1:${communityServer.port}`
     process.env.MESSAGING_SERVICE_URL = `http://127.0.0.1:${messagingServer.port}`
     process.env.MEDIA_SERVICE_URL = `http://127.0.0.1:${mediaServer.port}`
+    process.env.PRESENCE_SERVICE_URL = `http://127.0.0.1:${presenceServer.port}`
     process.env.PREFER_IDENTITY_SERVICE_PROXY = "true"
     process.env.PREFER_COMMUNITY_SERVICE_PROXY = "true"
     process.env.PREFER_MESSAGING_SERVICE_PROXY = "true"
     process.env.PREFER_MEDIA_SERVICE_PROXY = "true"
+    process.env.PREFER_PRESENCE_SERVICE_PROXY = "true"
+    process.env.DISABLE_RATE_LIMITING = "true"
 
     const gatewayModule = await import("./router")
     routeGatewayRequest = gatewayModule.routeRequest as GatewayRouteFn
   })
 
   afterAll(() => {
+    presenceServer?.stop(true)
     mediaServer?.stop(true)
     messagingServer?.stop(true)
     communityServer?.stop(true)
@@ -650,6 +751,221 @@ describe("api-gateway proxy integration", () => {
     expect(typingEvents.length).toBe(1)
     expect(serviceHits.messaging).toBeGreaterThan(hitsBefore.messaging)
     expect(serviceHits.media).toBeGreaterThan(hitsBefore.media)
+  })
+
+  it("proxies presence endpoints through the dedicated presence-service", async () => {
+    const hitsBeforePresence = serviceHits.presence
+    const actor = await registerUser("presenceactor")
+    const watcher = await registerUser("presencewatcher")
+
+    const friendRequest = await callGateway<FriendRequest>({
+      method: "POST",
+      path: "/v1/friends/requests",
+      token: actor.token,
+      body: {
+        userId: watcher.user.id
+      }
+    })
+    expect(friendRequest.status).toBe(201)
+
+    const accepted = await callGateway<FriendRequest>({
+      method: "POST",
+      path: `/v1/friends/requests/${friendRequest.body.id}`,
+      token: watcher.token,
+      body: {
+        action: "accept"
+      }
+    })
+    expect(accepted.status).toBe(200)
+
+    const watcherEvents = attachRealtimeCollector(watcher.user.id)
+
+    const updated = await callGateway<PresenceState>({
+      method: "PUT",
+      path: "/v1/presence",
+      token: actor.token,
+      body: {
+        status: "idle"
+      }
+    })
+
+    expect(updated.status).toBe(200)
+    expect(updated.body.userId).toBe(actor.user.id)
+    expect(updated.body.status).toBe("idle")
+
+    const presenceEvents = eventsOfType(watcherEvents, "presence.updated")
+    expect(presenceEvents.length).toBe(1)
+    expect((presenceEvents[0]?.payload as PresenceState).userId).toBe(actor.user.id)
+
+    const mePresence = await callGateway<PresenceState>({
+      method: "GET",
+      path: "/v1/presence/me",
+      token: actor.token
+    })
+
+    expect(mePresence.status).toBe(200)
+    expect(mePresence.body.userId).toBe(actor.user.id)
+
+    const bulkPresence = await callGateway<PresenceState[]>({
+      method: "POST",
+      path: "/v1/presence/bulk",
+      token: actor.token,
+      body: {
+        userIds: [actor.user.id, watcher.user.id, "usr_unknown"]
+      }
+    })
+
+    expect(bulkPresence.status).toBe(200)
+    expect(bulkPresence.body.length).toBe(3)
+
+    const singlePresence = await callGateway<PresenceState>({
+      method: "GET",
+      path: `/v1/presence/${actor.user.id}`,
+      token: actor.token
+    })
+
+    expect(singlePresence.status).toBe(200)
+    expect(singlePresence.body.userId).toBe(actor.user.id)
+    expect(serviceHits.presence).toBeGreaterThan(hitsBeforePresence)
+  })
+
+  it("supports push subscription CRUD via gateway", async () => {
+    const auth = await registerUser("pushsub")
+
+    const created = await callGateway<PushSubscription>({
+      method: "POST",
+      path: "/v1/notifications/push-subscriptions",
+      token: auth.token,
+      body: {
+        endpoint: `https://example.com/push/${createUniqueSuffix()}`,
+        keys: {
+          p256dh: createUniqueSuffix(),
+          auth: createUniqueSuffix()
+        }
+      }
+    })
+
+    expect(created.status).toBe(201)
+    expect(created.body.userId).toBe(auth.user.id)
+
+    const listed = await callGateway<PushSubscription[]>({
+      method: "GET",
+      path: "/v1/notifications/push-subscriptions",
+      token: auth.token
+    })
+
+    expect(listed.status).toBe(200)
+    expect(listed.body.some((item) => item.id === created.body.id)).toBe(true)
+
+    const removed = await callGateway<{ status: string }>({
+      method: "DELETE",
+      path: `/v1/notifications/push-subscriptions/${created.body.id}`,
+      token: auth.token
+    })
+
+    expect(removed.status).toBe(200)
+    expect(removed.body.status).toBe("ok")
+
+    const listedAfterDelete = await callGateway<PushSubscription[]>({
+      method: "GET",
+      path: "/v1/notifications/push-subscriptions",
+      token: auth.token
+    })
+
+    expect(listedAfterDelete.status).toBe(200)
+    expect(listedAfterDelete.body.some((item) => item.id === created.body.id)).toBe(false)
+  })
+
+  it("supports moderation actions with audit logs and ban enforcement", async () => {
+    const owner = await registerUser("modowner")
+    const target = await registerUser("modtarget")
+
+    const bootstrap = await bootstrapServerAndChannel(owner.token, "moderation")
+
+    const invite = await callGateway<ServerInvite>({
+      method: "POST",
+      path: `/v1/servers/${bootstrap.server.id}/invites`,
+      token: owner.token,
+      body: {}
+    })
+    expect(invite.status).toBe(201)
+
+    const joined = await callGateway<Server>({
+      method: "POST",
+      path: `/v1/invites/${invite.body.code}/join`,
+      token: target.token
+    })
+    expect(joined.status).toBe(200)
+
+    const banned = await callGateway<ModerationAction>({
+      method: "POST",
+      path: `/v1/servers/${bootstrap.server.id}/moderation/actions`,
+      token: owner.token,
+      body: {
+        targetUserId: target.user.id,
+        actionType: "ban",
+        reason: "spam"
+      } satisfies CreateModerationActionRequest
+    })
+
+    expect(banned.status).toBe(201)
+    expect(banned.body.actionType).toBe("ban")
+    expect(banned.body.targetUserId).toBe(target.user.id)
+
+    const membersAfterBan = await callGateway<User[]>({
+      method: "GET",
+      path: `/v1/servers/${bootstrap.server.id}/members`,
+      token: owner.token
+    })
+
+    expect(membersAfterBan.status).toBe(200)
+    expect(membersAfterBan.body.some((member) => member.id === target.user.id)).toBe(false)
+
+    const auditLogs = await callGateway<AuditLogEntry[]>({
+      method: "GET",
+      path: `/v1/servers/${bootstrap.server.id}/audit-logs`,
+      token: owner.token
+    })
+
+    expect(auditLogs.status).toBe(200)
+    expect(
+      auditLogs.body.some(
+        (entry) => entry.actionType.includes("ban") && entry.targetUserId === target.user.id
+      )
+    ).toBe(true)
+
+    const rejoin = await callGateway<Server | { error: string }>({
+      method: "POST",
+      path: `/v1/invites/${invite.body.code}/join`,
+      token: target.token
+    })
+
+    expect(rejoin.status).toBe(404)
+  })
+
+  it("supports gateway search over channels and messages", async () => {
+    const auth = await registerUser("search")
+    const bootstrap = await bootstrapServerAndChannel(auth.token, "search")
+
+    const createdMessage = await callGateway<Message>({
+      method: "POST",
+      path: `/v1/channels/${bootstrap.channel.id}/messages`,
+      token: auth.token,
+      body: {
+        body: "release2-search-token"
+      } satisfies CreateMessageRequest
+    })
+    expect(createdMessage.status).toBe(201)
+
+    const search = await callGateway<SearchResults>({
+      method: "GET",
+      path: `/v1/search?q=${encodeURIComponent("release2-search-token")}&scope=all`,
+      token: auth.token
+    })
+
+    expect(search.status).toBe(200)
+    expect(search.body.messages.some((message) => message.id === createdMessage.body.id)).toBe(true)
+    expect(search.body.channels.some((channel) => channel.id === bootstrap.channel.id)).toBe(false)
   })
 
   it("routes through dedicated services and falls back when messaging service is unavailable", async () => {
