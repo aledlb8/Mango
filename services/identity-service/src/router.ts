@@ -5,6 +5,7 @@ import {
   handleGetUserById,
   handleListFriendRequests,
   handleListFriends,
+  handleRemoveFriend,
   handleRespondFriendRequest,
   handleSearchUsers
 } from "./handlers/social"
@@ -12,6 +13,7 @@ import { corsHeaders, json } from "./http/response"
 import type { IdentityRouteContext } from "./router-context"
 
 const friendsRoute = /^\/v1\/friends$/
+const friendRoute = /^\/v1\/friends\/([^/]+)$/
 const friendRequestsRoute = /^\/v1\/friends\/requests$/
 const friendRequestRoute = /^\/v1\/friends\/requests\/([^/]+)$/
 const userRoute = /^\/v1\/users\/([^/]+)$/
@@ -72,6 +74,11 @@ export async function routeRequest(request: Request, ctx: IdentityRouteContext):
     return await handleRespondFriendRequest(request, friendRequestMatch[1], ctx)
   }
 
+  const friendMatch = pathname.match(friendRoute)
+  if (friendMatch?.[1] && friendMatch[1] !== "requests" && request.method === "DELETE") {
+    return await handleRemoveFriend(request, friendMatch[1], ctx)
+  }
+
   return json(ctx.corsOrigin, 200, {
     service: ctx.service,
     message: "Identity service is running.",
@@ -84,6 +91,7 @@ export async function routeRequest(request: Request, ctx: IdentityRouteContext):
       "GET /v1/users/:userId",
       "GET /v1/friends",
       "POST /v1/friends",
+      "DELETE /v1/friends/:friendUserId",
       "GET /v1/friends/requests",
       "POST /v1/friends/requests",
       "POST /v1/friends/requests/:requestId"

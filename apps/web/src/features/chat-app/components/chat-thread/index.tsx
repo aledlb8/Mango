@@ -24,6 +24,7 @@ type ChatThreadProps = {
   onAddReaction: (messageId: string, emoji: string) => Promise<void>
   onRemoveReaction: (messageId: string, emoji: string) => Promise<void>
   getAuthorLabel: (authorId: string) => string
+  copyToClipboard: (text: string) => void
 }
 
 export function ChatThread(props: ChatThreadProps) {
@@ -33,6 +34,17 @@ export function ChatThread(props: ChatThreadProps) {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [props.messages.length])
+
+  function handleReply(message: Message): void {
+    const quotedBody = message.body
+      .split("\n")
+      .map((line) => `> ${line}`)
+      .join("\n")
+    const author = props.getAuthorLabel(message.authorId)
+    const prefix = `@${author}\n${quotedBody}\n\n`
+    const nextBody = props.messageBody.trim().length > 0 ? `${props.messageBody}\n\n${prefix}` : prefix
+    props.setMessageBody(nextBody)
+  }
 
   return (
     <main className="flex min-w-0 flex-1 flex-col bg-background">
@@ -89,6 +101,8 @@ export function ChatThread(props: ChatThreadProps) {
               onDeleteMessage={props.onDeleteMessage}
               onAddReaction={props.onAddReaction}
               onRemoveReaction={props.onRemoveReaction}
+              onReply={handleReply}
+              copyToClipboard={props.copyToClipboard}
             />
           )
         })}

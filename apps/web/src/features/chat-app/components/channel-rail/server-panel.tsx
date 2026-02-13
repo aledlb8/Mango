@@ -1,8 +1,33 @@
 import { useState, type FormEvent } from "react"
 import type { Channel, Server } from "@/lib/api"
-import { ChevronDown, Copy, Hash, Link, Plus } from "lucide-react"
+import { ChevronDown, Copy, Hash, Link, Pencil, Plus, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
+  ContextMenu,
+  ContextMenuTrigger,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+} from "@/components/ui/context-menu"
 
 type ServerPanelProps = {
   selectedServer: Server | null
@@ -15,17 +40,56 @@ type ServerPanelProps = {
   onSelectChannel: (channelId: string) => void
   onCreateChannel: (event: FormEvent<HTMLFormElement>) => Promise<void>
   onCreateInvite: () => Promise<void>
+  onEditChannel: (channelId: string, name: string) => Promise<void>
+  onDeleteChannel: (channelId: string) => Promise<void>
+  copyToClipboard: (text: string) => void
 }
 
 export function ServerPanel(props: ServerPanelProps) {
   const [showCreateChannel, setShowCreateChannel] = useState(false)
   const [copiedInvite, setCopiedInvite] = useState(false)
+  const [editTargetChannel, setEditTargetChannel] = useState<Channel | null>(null)
+  const [nextChannelName, setNextChannelName] = useState("")
+  const [deleteTargetChannel, setDeleteTargetChannel] = useState<Channel | null>(null)
 
   function handleCopyInvite() {
     if (!props.latestInviteCode) return
     void navigator.clipboard.writeText(props.latestInviteCode)
     setCopiedInvite(true)
     setTimeout(() => setCopiedInvite(false), 2000)
+  }
+
+  function openEditChannel(channel: Channel): void {
+    setEditTargetChannel(channel)
+    setNextChannelName(channel.name)
+  }
+
+  async function confirmEditChannel(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault()
+    if (!editTargetChannel) {
+      return
+    }
+
+    const trimmedName = nextChannelName.trim()
+    if (!trimmedName || trimmedName === editTargetChannel.name) {
+      setEditTargetChannel(null)
+      setNextChannelName("")
+      return
+    }
+
+    const channelId = editTargetChannel.id
+    setEditTargetChannel(null)
+    setNextChannelName("")
+    await props.onEditChannel(channelId, trimmedName)
+  }
+
+  async function confirmDeleteChannel(): Promise<void> {
+    if (!deleteTargetChannel) {
+      return
+    }
+    const channelId = deleteTargetChannel.id
+    setDeleteTargetChannel(null)
+    await props.onDeleteChannel(channelId)
   }
 
   return (
@@ -82,14 +146,14 @@ export function ServerPanel(props: ServerPanelProps) {
         {showCreateChannel && (
           <form
             className="mb-2 px-1"
-            onSubmit={(e) => {
-              void props.onCreateChannel(e)
+            onSubmit={(event) => {
+              void props.onCreateChannel(event)
               setShowCreateChannel(false)
             }}
           >
             <Input
               value={props.channelName}
-              onChange={(e) => props.setChannelName(e.target.value)}
+              onChange={(event) => props.setChannelName(event.target.value)}
               placeholder="channel-name"
               className="h-7 text-xs"
               required
@@ -100,19 +164,122 @@ export function ServerPanel(props: ServerPanelProps) {
 
         <div className="space-y-0.5">
           {props.channels.map((channel) => (
-            <Button
-              key={channel.id}
-              variant="sidebar-item"
-              size="sidebar-item"
-              data-active={props.selectedChannelId === channel.id}
-              onClick={() => props.onSelectChannel(channel.id)}
-            >
-              <Hash className="h-4 w-4 shrink-0 opacity-60" />
-              <span className="truncate">{channel.name}</span>
-            </Button>
+            <ContextMenu key={channel.id}>
+              <ContextMenuTrigger asChild>
+                <Button
+                  variant="sidebar-item"
+                  size="sidebar-item"
+                  data-active={props.selectedChannelId === channel.id}
+                  onClick={() => props.onSelectChannel(channel.id)}
+                >
+                  <Hash className="h-4 w-4 shrink-0 opacity-60" />
+                  <span className="truncate">{channel.name}</span>
+                </Button>
+              </ContextMenuTrigger>
+              <ContextMenuContent>
+                <ContextMenuItem
+                  disabled={props.busyKey === "channel-edit"}
+                  onClick={() => openEditChannel(channel)}
+                >
+                  <Pencil className="h-4 w-4" />
+                  Edit Channel
+                </ContextMenuItem>
+                <ContextMenuItem
+                  disabled={props.busyKey === "channel-delete"}
+                  destructive
+                  onClick={() => setDeleteTargetChannel(channel)}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Delete Channel
+                </ContextMenuItem>
+                <ContextMenuSeparator />
+                <ContextMenuItem onClick={() => props.copyToClipboard(channel.id)}>
+                  <Copy className="h-4 w-4" />
+                  Copy Channel ID
+                </ContextMenuItem>
+              </ContextMenuContent>
+            </ContextMenu>
           ))}
         </div>
       </div>
+
+      <Dialog
+        open={Boolean(editTargetChannel)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditTargetChannel(null)
+            setNextChannelName("")
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Channel</DialogTitle>
+            <DialogDescription>
+              Update the channel name. Members will see the new name immediately.
+            </DialogDescription>
+          </DialogHeader>
+          <form className="space-y-4" onSubmit={(event) => void confirmEditChannel(event)}>
+            <Input
+              value={nextChannelName}
+              onChange={(event) => setNextChannelName(event.target.value)}
+              placeholder="channel-name"
+              required
+              autoFocus
+            />
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setEditTargetChannel(null)
+                  setNextChannelName("")
+                }}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={props.busyKey === "channel-edit"}>
+                Save
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog
+        open={Boolean(deleteTargetChannel)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteTargetChannel(null)
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Channel?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteTargetChannel
+                ? `Deleting #${deleteTargetChannel.name} is permanent.`
+                : "Deleting this channel is permanent."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel asChild>
+              <Button type="button" variant="outline">Cancel</Button>
+            </AlertDialogCancel>
+            <AlertDialogAction asChild>
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={props.busyKey === "channel-delete"}
+                onClick={() => void confirmDeleteChannel()}
+              >
+                Delete Channel
+              </Button>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   )
 }

@@ -227,6 +227,32 @@ export class MemoryStore implements AppStore {
     this.state.friendsByUserId.set(friendId, friendFriends)
   }
 
+  async removeFriend(userId: string, friendId: string): Promise<boolean> {
+    const userFriends = this.state.friendsByUserId.get(userId)
+    const friendFriends = this.state.friendsByUserId.get(friendId)
+
+    const removedFromUser = userFriends ? userFriends.delete(friendId) : false
+    const removedFromFriend = friendFriends ? friendFriends.delete(userId) : false
+
+    if (userFriends) {
+      this.state.friendsByUserId.set(userId, userFriends)
+    }
+    if (friendFriends) {
+      this.state.friendsByUserId.set(friendId, friendFriends)
+    }
+
+    for (const request of this.state.friendRequestsById.values()) {
+      const isPair =
+        (request.fromUserId === userId && request.toUserId === friendId) ||
+        (request.fromUserId === friendId && request.toUserId === userId)
+      if (isPair && request.status === "pending") {
+        this.state.friendRequestsById.delete(request.id)
+      }
+    }
+
+    return removedFromUser || removedFromFriend
+  }
+
   async createFriendRequest(fromUserId: string, toUserId: string): Promise<FriendRequest> {
     if (fromUserId === toUserId) {
       throw new Error("You cannot send a friend request to yourself.")
@@ -462,6 +488,45 @@ export class MemoryStore implements AppStore {
     return thread.participantIds.includes(userId)
   }
 
+  async leaveDirectThread(threadId: string, userId: string): Promise<boolean> {
+    const thread = this.state.directThreadsById.get(threadId)
+    if (!thread || !thread.participantIds.includes(userId)) {
+      return false
+    }
+
+    thread.participantIds = thread.participantIds.filter((participantId) => participantId !== userId)
+    thread.updatedAt = new Date().toISOString()
+
+    const participantThreadIds = this.state.directThreadIdsByUserId.get(userId) ?? []
+    this.state.directThreadIdsByUserId.set(
+      userId,
+      participantThreadIds.filter((id) => id !== threadId)
+    )
+
+    if (thread.kind === "dm") {
+      this.removeDmThreadLookup(threadId)
+    }
+
+    const backingChannel = this.state.channelsById.get(thread.channelId)
+    if (backingChannel) {
+      const members = this.state.membersByServerId.get(backingChannel.serverId)
+      members?.delete(userId)
+      if (members) {
+        this.state.membersByServerId.set(backingChannel.serverId, members)
+      }
+      this.state.memberRoleIdsByServerUser.delete(memberRoleKey(backingChannel.serverId, userId))
+      this.state.timeoutsByServerUser.delete(memberRoleKey(backingChannel.serverId, userId))
+    }
+
+    if (thread.participantIds.length === 0 && backingChannel) {
+      this.deleteServerInternal(backingChannel.serverId)
+      return true
+    }
+
+    this.state.directThreadsById.set(thread.id, thread)
+    return true
+  }
+
   async createServer(name: string, ownerId: string): Promise<Server> {
     const server: Server = {
       id: createId("srv"),
@@ -514,6 +579,29 @@ export class MemoryStore implements AppStore {
 
   async getServerById(serverId: string): Promise<Server | null> {
     return this.state.serversById.get(serverId) ?? null
+  }
+
+  async leaveServer(serverId: string, userId: string): Promise<boolean> {
+    const members = this.state.membersByServerId.get(serverId)
+    if (!members || !members.has(userId)) {
+      return false
+    }
+
+    members.delete(userId)
+    this.state.membersByServerId.set(serverId, members)
+    this.state.memberRoleIdsByServerUser.delete(memberRoleKey(serverId, userId))
+    this.state.timeoutsByServerUser.delete(memberRoleKey(serverId, userId))
+
+    return true
+  }
+
+  async deleteServer(serverId: string): Promise<boolean> {
+    if (!this.state.serversById.has(serverId)) {
+      return false
+    }
+
+    this.deleteServerInternal(serverId)
+    return true
   }
 
   async isServerMember(serverId: string, userId: string): Promise<boolean> {
@@ -731,6 +819,26 @@ export class MemoryStore implements AppStore {
 
   async getChannelById(channelId: string): Promise<Channel | null> {
     return this.state.channelsById.get(channelId) ?? null
+  }
+
+  async updateChannel(channelId: string, name: string): Promise<Channel | null> {
+    const channel = this.state.channelsById.get(channelId)
+    if (!channel) {
+      return null
+    }
+
+    channel.name = name
+    this.state.channelsById.set(channelId, channel)
+    return channel
+  }
+
+  async deleteChannel(channelId: string): Promise<boolean> {
+    if (!this.state.channelsById.has(channelId)) {
+      return false
+    }
+
+    this.deleteChannelInternal(channelId)
+    return true
   }
 
   async hasChannelPermission(channelId: string, userId: string, permission: Permission): Promise<boolean> {
@@ -1064,6 +1172,102 @@ export class MemoryStore implements AppStore {
       url,
       createdAt: new Date().toISOString()
     })
+  }
+
+  private removeDmThreadLookup(threadId: string): void {
+    for (const [pairKey, value] of this.state.dmThreadIdsByPairKey.entries()) {
+      if (value === threadId) {
+        this.state.dmThreadIdsByPairKey.delete(pairKey)
+      }
+    }
+  }
+
+  private deleteServerInternal(serverId: string): void {
+    const channelIds = [...(this.state.channelIdsByServerId.get(serverId) ?? [])]
+    for (const channelId of channelIds) {
+      this.deleteChannelInternal(channelId)
+    }
+
+    const roleIds = this.state.roleIdsByServerId.get(serverId) ?? []
+    for (const roleId of roleIds) {
+      this.state.rolesById.delete(roleId)
+    }
+    this.state.roleIdsByServerId.delete(serverId)
+
+    for (const key of this.state.memberRoleIdsByServerUser.keys()) {
+      if (key.startsWith(`${serverId}:`)) {
+        this.state.memberRoleIdsByServerUser.delete(key)
+      }
+    }
+
+    this.state.membersByServerId.delete(serverId)
+    this.state.bansByServerId.delete(serverId)
+    this.state.auditLogsByServerId.delete(serverId)
+    this.state.channelIdsByServerId.delete(serverId)
+    this.state.hiddenServerIds.delete(serverId)
+    this.state.serversById.delete(serverId)
+
+    for (const key of this.state.timeoutsByServerUser.keys()) {
+      if (key.startsWith(`${serverId}:`)) {
+        this.state.timeoutsByServerUser.delete(key)
+      }
+    }
+
+    for (const [code, invite] of this.state.invitesByCode.entries()) {
+      if (invite.serverId === serverId) {
+        this.state.invitesByCode.delete(code)
+      }
+    }
+  }
+
+  private deleteChannelInternal(channelId: string): void {
+    const threadId = this.state.directThreadIdByChannelId.get(channelId)
+    if (threadId) {
+      const thread = this.state.directThreadsById.get(threadId)
+      if (thread) {
+        for (const participantId of thread.participantIds) {
+          const ids = this.state.directThreadIdsByUserId.get(participantId) ?? []
+          this.state.directThreadIdsByUserId.set(
+            participantId,
+            ids.filter((id) => id !== thread.id)
+          )
+        }
+      }
+      this.removeDmThreadLookup(threadId)
+      this.state.directThreadsById.delete(threadId)
+      this.state.directThreadIdByChannelId.delete(channelId)
+      this.removeConversationReadMarkers(threadId)
+    }
+
+    const channel = this.state.channelsById.get(channelId)
+    if (channel) {
+      const channelIds = this.state.channelIdsByServerId.get(channel.serverId) ?? []
+      this.state.channelIdsByServerId.set(
+        channel.serverId,
+        channelIds.filter((id) => id !== channelId)
+      )
+    }
+
+    const messageIds = this.state.messageIdsByChannelId.get(channelId) ?? []
+    for (const messageId of messageIds) {
+      this.state.messagesById.delete(messageId)
+      this.state.reactionUsersByMessageId.delete(messageId)
+    }
+
+    this.state.messageIdsByChannelId.delete(channelId)
+    this.state.overwritesByChannelId.delete(channelId)
+    this.state.hiddenChannelIds.delete(channelId)
+    this.state.channelsById.delete(channelId)
+    this.removeConversationReadMarkers(channelId)
+  }
+
+  private removeConversationReadMarkers(conversationId: string): void {
+    const prefix = `${conversationId}:`
+    for (const key of this.state.readMarkersByConversationUser.keys()) {
+      if (key.startsWith(prefix)) {
+        this.state.readMarkersByConversationUser.delete(key)
+      }
+    }
   }
 
   async searchChannels(

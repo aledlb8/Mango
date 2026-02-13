@@ -1,5 +1,10 @@
 import { createHealthResponse } from "@mango/contracts"
-import { handleCreateChannel, handleListChannels } from "./handlers/channels"
+import {
+  handleCreateChannel,
+  handleDeleteChannel,
+  handleListChannels,
+  handleUpdateChannel
+} from "./handlers/channels"
 import { handleCreateServerInvite, handleJoinServerInvite } from "./handlers/invites"
 import { handleCreateModerationAction, handleListAuditLogs } from "./handlers/moderation"
 import {
@@ -10,11 +15,18 @@ import {
   handleListRoles,
   handleUpsertChannelOverwrite
 } from "./handlers/permissions"
-import { handleCreateServer, handleListServers } from "./handlers/servers"
+import {
+  handleCreateServer,
+  handleDeleteServer,
+  handleLeaveServer,
+  handleListServers
+} from "./handlers/servers"
 import { corsHeaders, error, json } from "./http/response"
 import type { RouteContext } from "./router-context"
 
 const serverChannelsRoute = /^\/v1\/servers\/([^/]+)\/channels$/
+const serverRoute = /^\/v1\/servers\/([^/]+)$/
+const serverLeaveRoute = /^\/v1\/servers\/([^/]+)\/members\/@me$/
 const serverMembersRoute = /^\/v1\/servers\/([^/]+)\/members$/
 const serverRolesRoute = /^\/v1\/servers\/([^/]+)\/roles$/
 const serverRoleAssignRoute = /^\/v1\/servers\/([^/]+)\/roles\/assign$/
@@ -22,6 +34,7 @@ const serverInvitesRoute = /^\/v1\/servers\/([^/]+)\/invites$/
 const serverModerationActionsRoute = /^\/v1\/servers\/([^/]+)\/moderation\/actions$/
 const serverAuditLogsRoute = /^\/v1\/servers\/([^/]+)\/audit-logs$/
 const channelOverwritesRoute = /^\/v1\/channels\/([^/]+)\/overwrites$/
+const channelRoute = /^\/v1\/channels\/([^/]+)$/
 const inviteJoinRoute = /^\/v1\/invites\/([^/]+)\/join$/
 
 export async function routeRequest(request: Request, ctx: RouteContext): Promise<Response> {
@@ -44,6 +57,16 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
 
   if (pathname === "/v1/servers" && request.method === "GET") {
     return await handleListServers(request, ctx)
+  }
+
+  const serverMatch = pathname.match(serverRoute)
+  if (serverMatch?.[1] && request.method === "DELETE") {
+    return await handleDeleteServer(request, serverMatch[1], ctx)
+  }
+
+  const serverLeaveMatch = pathname.match(serverLeaveRoute)
+  if (serverLeaveMatch?.[1] && request.method === "DELETE") {
+    return await handleLeaveServer(request, serverLeaveMatch[1], ctx)
   }
 
   const serverChannelsMatch = pathname.match(serverChannelsRoute)
@@ -98,6 +121,15 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
     return await handleUpsertChannelOverwrite(request, channelOverwritesMatch[1], ctx)
   }
 
+  const channelMatch = pathname.match(channelRoute)
+  if (channelMatch?.[1] && request.method === "PATCH") {
+    return await handleUpdateChannel(request, channelMatch[1], ctx)
+  }
+
+  if (channelMatch?.[1] && request.method === "DELETE") {
+    return await handleDeleteChannel(request, channelMatch[1], ctx)
+  }
+
   const inviteJoinMatch = pathname.match(inviteJoinRoute)
   if (inviteJoinMatch?.[1] && request.method === "POST") {
     return await handleJoinServerInvite(request, inviteJoinMatch[1], ctx)
@@ -114,8 +146,12 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       "GET /health",
       "POST /v1/servers",
       "GET /v1/servers",
+      "DELETE /v1/servers/:serverId",
+      "DELETE /v1/servers/:serverId/members/@me",
       "POST /v1/servers/:serverId/channels",
       "GET /v1/servers/:serverId/channels",
+      "PATCH /v1/channels/:channelId",
+      "DELETE /v1/channels/:channelId",
       "POST /v1/servers/:serverId/members",
       "GET /v1/servers/:serverId/members",
       "GET /v1/servers/:serverId/roles",

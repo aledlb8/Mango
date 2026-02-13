@@ -10,6 +10,7 @@ import {
 import {
   handleCreateDirectThread,
   handleCreateDirectThreadMessage,
+  handleLeaveDirectThread,
   handleListDirectThreadMessages,
   handleListDirectThreads
 } from "./handlers/direct-threads"
@@ -24,6 +25,7 @@ import { corsHeaders, error, json } from "./http/response"
 import type { RouteContext } from "./router-context"
 
 const directThreadsRoute = /^\/v1\/direct-threads$/
+const directThreadLeaveRoute = /^\/v1\/direct-threads\/([^/]+)\/participants\/@me$/
 const directThreadMessagesRoute = /^\/v1\/direct-threads\/([^/]+)\/messages$/
 const directThreadReadMarkerRoute = /^\/v1\/direct-threads\/([^/]+)\/read-marker$/
 const directThreadTypingRoute = /^\/v1\/direct-threads\/([^/]+)\/typing$/
@@ -54,6 +56,11 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
 
   if (directThreadsRoute.test(pathname) && request.method === "GET") {
     return await handleListDirectThreads(request, ctx)
+  }
+
+  const directThreadLeaveMatch = pathname.match(directThreadLeaveRoute)
+  if (directThreadLeaveMatch?.[1] && request.method === "DELETE") {
+    return await handleLeaveDirectThread(request, directThreadLeaveMatch[1], ctx)
   }
 
   const directThreadMessagesMatch = pathname.match(directThreadMessagesRoute)
@@ -139,6 +146,7 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       "GET /health",
       "POST /v1/direct-threads",
       "GET /v1/direct-threads",
+      "DELETE /v1/direct-threads/:threadId/participants/@me",
       "POST /v1/direct-threads/:threadId/messages",
       "GET /v1/direct-threads/:threadId/messages",
       "GET /v1/direct-threads/:threadId/read-marker",

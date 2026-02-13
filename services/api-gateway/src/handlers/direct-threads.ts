@@ -105,3 +105,21 @@ export async function handleListDirectThreadMessages(
   const messages: Message[] = await ctx.store.listMessages(access.thread.channelId)
   return json(ctx.corsOrigin, 200, messages)
 }
+
+export async function handleLeaveDirectThread(
+  request: Request,
+  threadId: string,
+  ctx: RouteContext
+): Promise<Response> {
+  const access = await requireDirectThreadParticipant(request, threadId, ctx)
+  if (access instanceof Response) {
+    return access
+  }
+
+  const left = await ctx.store.leaveDirectThread(threadId, access.user.id)
+  if (!left) {
+    return error(ctx.corsOrigin, 404, "Direct thread not found.")
+  }
+
+  return json(ctx.corsOrigin, 200, { status: "ok" as const })
+}

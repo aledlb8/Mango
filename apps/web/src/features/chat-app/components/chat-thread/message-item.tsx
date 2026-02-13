@@ -1,10 +1,21 @@
 import { useState, type KeyboardEvent } from "react"
 import type { Message } from "@/lib/api"
-import { Paperclip, Pencil, Trash2 } from "lucide-react"
+import { ClipboardCopy, Link, Paperclip, Pencil, Reply, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  ContextMenu,
+  ContextMenuTrigger,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubTrigger,
+  ContextMenuSubContent,
+} from "@/components/ui/context-menu"
 
 const QUICK_REACTIONS = ["\u{1F44D}", "\u{1F525}", "\u{1F602}", "\u{1F389}"]
+const REACTION_PICKER = ["\u{1F44D}", "\u{1F525}", "\u{1F602}", "\u{1F389}", "\u{2764}\u{FE0F}", "\u{1F62E}", "\u{1F440}", "\u{2705}", "\u{1F64F}", "\u{1F4AF}"]
 
 function formatTime(value: string): string {
   return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -19,6 +30,8 @@ type MessageItemProps = {
   onDeleteMessage: (messageId: string) => Promise<void>
   onAddReaction: (messageId: string, emoji: string) => Promise<void>
   onRemoveReaction: (messageId: string, emoji: string) => Promise<void>
+  onReply: (message: Message) => void
+  copyToClipboard: (text: string) => void
 }
 
 export function MessageItem(props: MessageItemProps) {
@@ -53,11 +66,13 @@ export function MessageItem(props: MessageItemProps) {
   }
 
   return (
-    <article
-      className={`group relative flex gap-4 rounded px-2 py-0.5 hover:bg-secondary/30 ${
-        props.isGrouped ? "" : "mt-4 pt-1"
-      }`}
-    >
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <article
+          className={`group relative flex gap-4 rounded px-2 py-0.5 hover:bg-secondary/30 ${
+            props.isGrouped ? "" : "mt-4 pt-1"
+          }`}
+        >
       {/* Avatar / spacer */}
       <div className="w-10 shrink-0">
         {!props.isGrouped && (
@@ -191,6 +206,53 @@ export function MessageItem(props: MessageItemProps) {
           )}
         </div>
       )}
-    </article>
+        </article>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger>Add Reaction</ContextMenuSubTrigger>
+          <ContextMenuSubContent className="grid grid-cols-5 gap-0 p-1">
+            {REACTION_PICKER.map((emoji) => (
+              <ContextMenuItem
+                key={emoji}
+                className="justify-center px-2 py-1.5 text-base"
+                onClick={() => void props.onAddReaction(props.message.id, emoji)}
+              >
+                {emoji}
+              </ContextMenuItem>
+            ))}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+        <ContextMenuSeparator />
+        <ContextMenuItem onClick={() => props.onReply(props.message)}>
+          <Reply className="h-4 w-4" />
+          Reply
+        </ContextMenuItem>
+        <ContextMenuItem onClick={() => props.copyToClipboard(props.message.body)}>
+          <ClipboardCopy className="h-4 w-4" />
+          Copy Text
+        </ContextMenuItem>
+        <ContextMenuItem onClick={() => props.copyToClipboard(`${window.location.href}#${props.message.id}`)}>
+          <Link className="h-4 w-4" />
+          Copy Message Link
+        </ContextMenuItem>
+        {props.isAuthor && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onClick={startEditing}>
+              <Pencil className="h-4 w-4" />
+              Edit Message
+            </ContextMenuItem>
+            <ContextMenuItem
+              destructive
+              onClick={() => void props.onDeleteMessage(props.message.id)}
+            >
+              <Trash2 className="h-4 w-4" />
+              Delete Message
+            </ContextMenuItem>
+          </>
+        )}
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }

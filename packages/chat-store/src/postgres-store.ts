@@ -514,6 +514,38 @@ export class PostgresStore implements AppStore {
     })
   }
 
+  async removeFriend(userId: string, friendId: string): Promise<boolean> {
+    const result = await this.sql.begin(async (tx) => {
+      const first = await tx<{ user_id: string }[]>`
+        DELETE FROM friendships
+        WHERE user_id = ${userId}
+          AND friend_id = ${friendId}
+        RETURNING user_id
+      `
+
+      const second = await tx<{ user_id: string }[]>`
+        DELETE FROM friendships
+        WHERE user_id = ${friendId}
+          AND friend_id = ${userId}
+        RETURNING user_id
+      `
+
+      await tx`
+        DELETE FROM friend_requests
+        WHERE status = 'pending'
+          AND (
+            (from_user_id = ${userId} AND to_user_id = ${friendId})
+            OR
+            (from_user_id = ${friendId} AND to_user_id = ${userId})
+          )
+      `
+
+      return first.length > 0 || second.length > 0
+    })
+
+    return result
+  }
+
   async listFriends(userId: string): Promise<User[]> {
     const rows = await this.sql<PublicUserRow[]>`
       SELECT u.id, u.email, u.username, u.display_name, u.created_at
@@ -837,6 +869,95 @@ export class PostgresStore implements AppStore {
     return Boolean(rows[0]?.exists)
   }
 
+  async leaveDirectThread(threadId: string, userId: string): Promise<boolean> {
+    const left = await this.sql.begin(async (tx) => {
+      const threadRows = await tx<{
+        id: string
+        server_id: string
+        thread_type: "dm" | "group"
+      }[]>`
+        SELECT id, server_id, thread_type
+        FROM direct_threads
+        WHERE id = ${threadId}
+        LIMIT 1
+      `
+
+      const thread = threadRows[0]
+      if (!thread) {
+        return false
+      }
+
+      const removed = await tx<{ thread_id: string }[]>`
+        DELETE FROM direct_thread_participants
+        WHERE thread_id = ${thread.id}
+          AND user_id = ${userId}
+        RETURNING thread_id
+      `
+
+      if (removed.length === 0) {
+        return false
+      }
+
+      await tx`
+        DELETE FROM member_roles
+        WHERE server_id = ${thread.server_id}
+          AND user_id = ${userId}
+      `
+
+      await tx`
+        DELETE FROM server_members
+        WHERE server_id = ${thread.server_id}
+          AND user_id = ${userId}
+      `
+
+      await tx`
+        DELETE FROM server_timeouts
+        WHERE server_id = ${thread.server_id}
+          AND user_id = ${userId}
+      `
+
+      await tx`
+        DELETE FROM read_markers
+        WHERE conversation_id = ${thread.id}
+          AND user_id = ${userId}
+      `
+
+      const remainingRows = await tx<{ count: number }[]>`
+        SELECT COUNT(*)::int AS count
+        FROM direct_thread_participants
+        WHERE thread_id = ${thread.id}
+      `
+
+      const remaining = Number(remainingRows[0]?.count ?? 0)
+      if (remaining === 0) {
+        await this.deleteServerConversationReadMarkers(thread.server_id, tx)
+        await tx`
+          DELETE FROM servers
+          WHERE id = ${thread.server_id}
+        `
+        return true
+      }
+
+      if (thread.thread_type === "dm" && remaining < 2) {
+        await tx`
+          UPDATE direct_threads
+          SET dm_key = NULL, updated_at = NOW()
+          WHERE id = ${thread.id}
+        `
+      } else {
+        await tx`
+          UPDATE direct_threads
+          SET updated_at = NOW()
+          WHERE id = ${thread.id}
+        `
+      }
+
+      return true
+    })
+
+    return left
+  }
+
   async createServer(name: string, ownerId: string): Promise<Server> {
     const serverId = createId("srv")
     const createdAt = new Date().toISOString()
@@ -896,6 +1017,65 @@ export class PostgresStore implements AppStore {
       LIMIT 1
     `
     return rows[0] ? mapServer(rows[0]) : null
+  }
+
+  async leaveServer(serverId: string, userId: string): Promise<boolean> {
+    const left = await this.sql.begin(async (tx) => {
+      const removed = await tx<{ server_id: string }[]>`
+        DELETE FROM server_members
+        WHERE server_id = ${serverId}
+          AND user_id = ${userId}
+        RETURNING server_id
+      `
+
+      if (removed.length === 0) {
+        return false
+      }
+
+      await tx`
+        DELETE FROM member_roles
+        WHERE server_id = ${serverId}
+          AND user_id = ${userId}
+      `
+
+      await tx`
+        DELETE FROM server_timeouts
+        WHERE server_id = ${serverId}
+          AND user_id = ${userId}
+      `
+
+      await this.deleteServerConversationReadMarkersForUser(serverId, userId, tx)
+      return true
+    })
+
+    return left
+  }
+
+  async deleteServer(serverId: string): Promise<boolean> {
+    const deleted = await this.sql.begin(async (tx) => {
+      const existing = await tx<{ id: string }[]>`
+        SELECT id
+        FROM servers
+        WHERE id = ${serverId}
+        LIMIT 1
+      `
+
+      if (!existing[0]) {
+        return false
+      }
+
+      await this.deleteServerConversationReadMarkers(serverId, tx)
+
+      const removed = await tx<{ id: string }[]>`
+        DELETE FROM servers
+        WHERE id = ${serverId}
+        RETURNING id
+      `
+
+      return removed.length > 0
+    })
+
+    return deleted
   }
 
   async isServerMember(serverId: string, userId: string): Promise<boolean> {
@@ -1178,6 +1358,75 @@ export class PostgresStore implements AppStore {
       LIMIT 1
     `
     return rows[0] ? mapChannel(rows[0]) : null
+  }
+
+  async updateChannel(channelId: string, name: string): Promise<Channel | null> {
+    const rows = await this.sql<ChannelRow[]>`
+      UPDATE channels
+      SET name = ${name}
+      WHERE id = ${channelId}
+      RETURNING id, server_id, name, channel_type, created_at
+    `
+
+    return rows[0] ? mapChannel(rows[0]) : null
+  }
+
+  async deleteChannel(channelId: string): Promise<boolean> {
+    const deleted = await this.sql.begin(async (tx) => {
+      const channelRows = await tx<{ id: string; server_id: string }[]>`
+        SELECT id, server_id
+        FROM channels
+        WHERE id = ${channelId}
+        LIMIT 1
+      `
+
+      const channel = channelRows[0]
+      if (!channel) {
+        return false
+      }
+
+      const threadRows = await tx<{ id: string; server_id: string }[]>`
+        SELECT id, server_id
+        FROM direct_threads
+        WHERE channel_id = ${channel.id}
+        LIMIT 1
+      `
+
+      const thread = threadRows[0]
+
+      await tx`
+        DELETE FROM read_markers
+        WHERE conversation_id = ${channel.id}
+      `
+
+      if (thread) {
+        await tx`
+          DELETE FROM read_markers
+          WHERE conversation_id = ${thread.id}
+        `
+      }
+
+      if (thread) {
+        await this.deleteServerConversationReadMarkers(thread.server_id, tx)
+        const removedServer = await tx<{ id: string }[]>`
+          DELETE FROM servers
+          WHERE id = ${thread.server_id}
+          RETURNING id
+        `
+
+        return removedServer.length > 0
+      }
+
+      const removedChannel = await tx<{ id: string }[]>`
+        DELETE FROM channels
+        WHERE id = ${channel.id}
+        RETURNING id
+      `
+
+      return removedChannel.length > 0
+    })
+
+    return deleted
   }
 
   async hasChannelPermission(channelId: string, userId: string, permission: Permission): Promise<boolean> {
@@ -1835,6 +2084,69 @@ export class PostgresStore implements AppStore {
     })
 
     return joined
+  }
+
+  private async deleteServerConversationReadMarkers(serverId: string, sql: SQL = this.sql): Promise<void> {
+    const channelRows = await sql<{ id: string }[]>`
+      SELECT id
+      FROM channels
+      WHERE server_id = ${serverId}
+    `
+
+    const threadRows = await sql<{ id: string }[]>`
+      SELECT id
+      FROM direct_threads
+      WHERE server_id = ${serverId}
+    `
+
+    const conversationIds = new Set<string>()
+    for (const row of channelRows) {
+      conversationIds.add(row.id)
+    }
+    for (const row of threadRows) {
+      conversationIds.add(row.id)
+    }
+
+    for (const conversationId of conversationIds) {
+      await sql`
+        DELETE FROM read_markers
+        WHERE conversation_id = ${conversationId}
+      `
+    }
+  }
+
+  private async deleteServerConversationReadMarkersForUser(
+    serverId: string,
+    userId: string,
+    sql: SQL = this.sql
+  ): Promise<void> {
+    const channelRows = await sql<{ id: string }[]>`
+      SELECT id
+      FROM channels
+      WHERE server_id = ${serverId}
+    `
+
+    const threadRows = await sql<{ id: string }[]>`
+      SELECT id
+      FROM direct_threads
+      WHERE server_id = ${serverId}
+    `
+
+    const conversationIds = new Set<string>()
+    for (const row of channelRows) {
+      conversationIds.add(row.id)
+    }
+    for (const row of threadRows) {
+      conversationIds.add(row.id)
+    }
+
+    for (const conversationId of conversationIds) {
+      await sql`
+        DELETE FROM read_markers
+        WHERE conversation_id = ${conversationId}
+          AND user_id = ${userId}
+      `
+    }
   }
 
   private async listMemberRoleIds(serverId: string, userId: string): Promise<string[]> {

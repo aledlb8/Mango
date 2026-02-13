@@ -20,10 +20,16 @@ import {
   preferPresenceServiceProxy
 } from "./config"
 import { handleGetMe, handleLogin, handleRegister } from "./handlers/auth"
-import { handleCreateChannel, handleListChannels } from "./handlers/channels"
+import {
+  handleCreateChannel,
+  handleDeleteChannel,
+  handleListChannels,
+  handleUpdateChannel
+} from "./handlers/channels"
 import {
   handleCreateDirectThread,
   handleCreateDirectThreadMessage,
+  handleLeaveDirectThread,
   handleListDirectThreadMessages,
   handleListDirectThreads
 } from "./handlers/direct-threads"
@@ -62,10 +68,16 @@ import {
   handleGetUserById,
   handleListFriendRequests,
   handleListFriends,
+  handleRemoveFriend,
   handleRespondFriendRequest,
   handleSearchUsers
 } from "./handlers/social"
-import { handleCreateServer, handleListServers } from "./handlers/servers"
+import {
+  handleCreateServer,
+  handleDeleteServer,
+  handleLeaveServer,
+  handleListServers
+} from "./handlers/servers"
 import { handleSearch } from "./handlers/search"
 import { handleChannelTyping, handleDirectThreadTyping } from "./handlers/typing"
 import { corsHeaders, error, json } from "./http/response"
@@ -73,6 +85,8 @@ import { checkRateLimit } from "./rate-limit"
 import type { RouteContext } from "./router-context"
 
 const serverChannelsRoute = /^\/v1\/servers\/([^/]+)\/channels$/
+const serverRoute = /^\/v1\/servers\/([^/]+)$/
+const serverLeaveRoute = /^\/v1\/servers\/([^/]+)\/members\/@me$/
 const serverMembersRoute = /^\/v1\/servers\/([^/]+)\/members$/
 const serverRolesRoute = /^\/v1\/servers\/([^/]+)\/roles$/
 const serverRoleAssignRoute = /^\/v1\/servers\/([^/]+)\/roles\/assign$/
@@ -80,6 +94,7 @@ const serverInvitesRoute = /^\/v1\/servers\/([^/]+)\/invites$/
 const serverModerationActionsRoute = /^\/v1\/servers\/([^/]+)\/moderation\/actions$/
 const serverAuditLogsRoute = /^\/v1\/servers\/([^/]+)\/audit-logs$/
 const directThreadsRoute = /^\/v1\/direct-threads$/
+const directThreadLeaveRoute = /^\/v1\/direct-threads\/([^/]+)\/participants\/@me$/
 const directThreadMessagesRoute = /^\/v1\/direct-threads\/([^/]+)\/messages$/
 const directThreadReadMarkerRoute = /^\/v1\/direct-threads\/([^/]+)\/read-marker$/
 const directThreadTypingRoute = /^\/v1\/direct-threads\/([^/]+)\/typing$/
@@ -87,11 +102,13 @@ const channelMessagesRoute = /^\/v1\/channels\/([^/]+)\/messages$/
 const channelReadMarkerRoute = /^\/v1\/channels\/([^/]+)\/read-marker$/
 const channelTypingRoute = /^\/v1\/channels\/([^/]+)\/typing$/
 const channelOverwritesRoute = /^\/v1\/channels\/([^/]+)\/overwrites$/
+const channelRoute = /^\/v1\/channels\/([^/]+)$/
 const messageRoute = /^\/v1\/messages\/([^/]+)$/
 const messageReactionsRoute = /^\/v1\/messages\/([^/]+)\/reactions$/
 const messageReactionRoute = /^\/v1\/messages\/([^/]+)\/reactions\/([^/]+)$/
 const inviteJoinRoute = /^\/v1\/invites\/([^/]+)\/join$/
 const friendsRoute = /^\/v1\/friends$/
+const friendRoute = /^\/v1\/friends\/([^/]+)$/
 const friendRequestsRoute = /^\/v1\/friends\/requests$/
 const friendRequestRoute = /^\/v1\/friends\/requests\/([^/]+)$/
 const pushSubscriptionsRoute = /^\/v1\/notifications\/push-subscriptions$/
@@ -415,6 +432,28 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
     return await handleListServers(request, ctx)
   }
 
+  const serverMatch = pathname.match(serverRoute)
+  if (serverMatch?.[1] && request.method === "DELETE") {
+    if (shouldProxyCommunity(ctx)) {
+      const proxied = await proxyToService(communityServiceUrl, request, ctx)
+      if (proxied) {
+        return proxied
+      }
+    }
+    return await handleDeleteServer(request, serverMatch[1], ctx)
+  }
+
+  const serverLeaveMatch = pathname.match(serverLeaveRoute)
+  if (serverLeaveMatch?.[1] && request.method === "DELETE") {
+    if (shouldProxyCommunity(ctx)) {
+      const proxied = await proxyToService(communityServiceUrl, request, ctx)
+      if (proxied) {
+        return proxied
+      }
+    }
+    return await handleLeaveServer(request, serverLeaveMatch[1], ctx)
+  }
+
   if (pathname === "/v1/users/search" && request.method === "GET") {
     if (shouldProxyIdentity(ctx)) {
       const proxied = await proxyToService(identityServiceUrl, request, ctx)
@@ -485,6 +524,17 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       }
     }
     return await handleRespondFriendRequest(request, friendRequestMatch[1], ctx)
+  }
+
+  const friendMatch = pathname.match(friendRoute)
+  if (friendMatch?.[1] && friendMatch[1] !== "requests" && request.method === "DELETE") {
+    if (shouldProxyIdentity(ctx)) {
+      const proxied = await proxyToService(identityServiceUrl, request, ctx)
+      if (proxied) {
+        return proxied
+      }
+    }
+    return await handleRemoveFriend(request, friendMatch[1], ctx)
   }
 
   if (pathname === "/v1/search" && request.method === "GET") {
@@ -632,6 +682,17 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
     return await handleListDirectThreads(request, ctx)
   }
 
+  const directThreadLeaveMatch = pathname.match(directThreadLeaveRoute)
+  if (directThreadLeaveMatch?.[1] && request.method === "DELETE") {
+    if (shouldProxyMessaging(ctx)) {
+      const proxied = await proxyToService(messagingServiceUrl, request, ctx)
+      if (proxied) {
+        return proxied
+      }
+    }
+    return await handleLeaveDirectThread(request, directThreadLeaveMatch[1], ctx)
+  }
+
   const directThreadMessagesMatch = pathname.match(directThreadMessagesRoute)
   if (directThreadMessagesMatch?.[1] && request.method === "POST") {
     if (shouldProxyMessaging(ctx)) {
@@ -742,6 +803,27 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
     return await handleChannelTyping(request, channelTypingMatch[1], ctx)
   }
 
+  const channelMatch = pathname.match(channelRoute)
+  if (channelMatch?.[1] && request.method === "PATCH") {
+    if (shouldProxyCommunity(ctx)) {
+      const proxied = await proxyToService(communityServiceUrl, request, ctx)
+      if (proxied) {
+        return proxied
+      }
+    }
+    return await handleUpdateChannel(request, channelMatch[1], ctx)
+  }
+
+  if (channelMatch?.[1] && request.method === "DELETE") {
+    if (shouldProxyCommunity(ctx)) {
+      const proxied = await proxyToService(communityServiceUrl, request, ctx)
+      if (proxied) {
+        return proxied
+      }
+    }
+    return await handleDeleteChannel(request, channelMatch[1], ctx)
+  }
+
   const channelOverwritesMatch = pathname.match(channelOverwritesRoute)
   if (channelOverwritesMatch?.[1] && request.method === "PUT") {
     if (shouldProxyCommunity(ctx)) {
@@ -836,6 +918,7 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       "GET /v1/users/:userId",
       "GET /v1/friends",
       "POST /v1/friends",
+      "DELETE /v1/friends/:friendUserId",
       "GET /v1/friends/requests",
       "POST /v1/friends/requests",
       "POST /v1/friends/requests/:requestId",
@@ -845,6 +928,8 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       "DELETE /v1/notifications/push-subscriptions/:subscriptionId",
       "POST /v1/servers",
       "GET /v1/servers",
+      "DELETE /v1/servers/:serverId",
+      "DELETE /v1/servers/:serverId/members/@me",
       "POST /v1/servers/:serverId/channels",
       "GET /v1/servers/:serverId/channels",
       "POST /v1/servers/:serverId/members",
@@ -857,6 +942,7 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       "GET /v1/servers/:serverId/audit-logs",
       "POST /v1/direct-threads",
       "GET /v1/direct-threads",
+      "DELETE /v1/direct-threads/:threadId/participants/@me",
       "POST /v1/direct-threads/:threadId/messages",
       "GET /v1/direct-threads/:threadId/messages",
       "GET /v1/direct-threads/:threadId/read-marker",
@@ -867,6 +953,8 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       "GET /v1/channels/:channelId/read-marker",
       "PUT /v1/channels/:channelId/read-marker",
       "POST /v1/channels/:channelId/typing",
+      "PATCH /v1/channels/:channelId",
+      "DELETE /v1/channels/:channelId",
       "PUT /v1/channels/:channelId/overwrites",
       "PATCH /v1/messages/:messageId",
       "DELETE /v1/messages/:messageId",

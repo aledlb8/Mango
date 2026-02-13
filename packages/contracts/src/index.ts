@@ -257,6 +257,10 @@ export type CreateChannelRequest = {
   name: string;
 };
 
+export type UpdateChannelRequest = {
+  name: string;
+};
+
 export type CreateMessageRequest = {
   body: string;
   attachments?: Attachment[];

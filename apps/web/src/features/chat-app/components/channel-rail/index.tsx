@@ -25,6 +25,10 @@ type ChannelRailProps = {
   getDirectThreadLabel: (thread: DirectThread) => string
   getDirectThreadAvatar: (thread: DirectThread) => string
   onSignOut: () => void
+  onEditChannel: (channelId: string, name: string) => Promise<void>
+  onDeleteChannel: (channelId: string) => Promise<void>
+  onCloseDirectThread: (threadId: string) => Promise<void>
+  copyToClipboard: (text: string) => void
 }
 
 export function ChannelRail(props: ChannelRailProps) {
@@ -44,6 +48,9 @@ export function ChannelRail(props: ChannelRailProps) {
           onSelectChannel={props.onSelectChannel}
           onCreateChannel={props.onCreateChannel}
           onCreateInvite={props.onCreateInvite}
+          onEditChannel={props.onEditChannel}
+          onDeleteChannel={props.onDeleteChannel}
+          copyToClipboard={props.copyToClipboard}
         />
       ) : (
         <FriendsPanel
@@ -54,6 +61,7 @@ export function ChannelRail(props: ChannelRailProps) {
           onSelectDirectThread={props.onSelectDirectThread}
           getDirectThreadLabel={props.getDirectThreadLabel}
           getDirectThreadAvatar={props.getDirectThreadAvatar}
+          onCloseDirectThread={props.onCloseDirectThread}
         />
       )}
 

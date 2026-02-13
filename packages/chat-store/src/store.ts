@@ -35,6 +35,7 @@ export interface AppStore {
   findUserById(userId: string): Promise<StoredUser | null>
   searchUsers(query: string, excludeUserId: string): Promise<User[]>
   addFriend(userId: string, friendId: string): Promise<void>
+  removeFriend(userId: string, friendId: string): Promise<boolean>
   listFriends(userId: string): Promise<User[]>
   createFriendRequest(fromUserId: string, toUserId: string): Promise<FriendRequest>
   listFriendRequests(userId: string): Promise<FriendRequest[]>
@@ -52,10 +53,13 @@ export interface AppStore {
   getDirectThreadById(threadId: string): Promise<DirectThread | null>
   getDirectThreadByChannelId(channelId: string): Promise<DirectThread | null>
   isDirectThreadParticipant(threadId: string, userId: string): Promise<boolean>
+  leaveDirectThread(threadId: string, userId: string): Promise<boolean>
 
   createServer(name: string, ownerId: string): Promise<Server>
   listServersForUser(userId: string): Promise<Server[]>
   getServerById(serverId: string): Promise<Server | null>
+  leaveServer(serverId: string, userId: string): Promise<boolean>
+  deleteServer(serverId: string): Promise<boolean>
   isServerMember(serverId: string, userId: string): Promise<boolean>
   addServerMember(serverId: string, userId: string): Promise<void>
   listServerMembers(serverId: string): Promise<User[]>
@@ -76,6 +80,8 @@ export interface AppStore {
   listChannels(serverId: string): Promise<Channel[]>
   listChannelsForUser(serverId: string, userId: string): Promise<Channel[]>
   getChannelById(channelId: string): Promise<Channel | null>
+  updateChannel(channelId: string, name: string): Promise<Channel | null>
+  deleteChannel(channelId: string): Promise<boolean>
   hasChannelPermission(channelId: string, userId: string, permission: Permission): Promise<boolean>
 
   createMessage(channelId: string, authorId: string, body: string, attachments: Attachment[]): Promise<Message>

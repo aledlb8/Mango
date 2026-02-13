@@ -42,8 +42,14 @@ export function ChatAppShell(props: ChatAppShellProps) {
     }
 
     if (routeKind === "server" && routeServerId && app.selectedServerId === routeServerId) {
-      if (!routeChannelId && app.selectedChannelId) {
+      if (app.selectedChannelId) {
         const target = serverChannelPath(routeServerId, app.selectedChannelId)
+        if (pathname !== target && pendingNormalizePathRef.current !== target) {
+          pendingNormalizePathRef.current = target
+          router.replace(target)
+        }
+      } else if (routeChannelId) {
+        const target = serverPath(routeServerId)
         if (pathname !== target && pendingNormalizePathRef.current !== target) {
           pendingNormalizePathRef.current = target
           router.replace(target)
@@ -52,11 +58,19 @@ export function ChatAppShell(props: ChatAppShellProps) {
       return
     }
 
-    if (routeKind === "dm" && routeThreadId && app.selectedDirectThreadId && routeThreadId !== app.selectedDirectThreadId) {
-      const target = dmPath(app.selectedDirectThreadId)
-      if (pathname !== target && pendingNormalizePathRef.current !== target) {
-        pendingNormalizePathRef.current = target
-        router.replace(target)
+    if (routeKind === "dm" && routeThreadId) {
+      if (app.selectedDirectThreadId && routeThreadId !== app.selectedDirectThreadId) {
+        const target = dmPath(app.selectedDirectThreadId)
+        if (pathname !== target && pendingNormalizePathRef.current !== target) {
+          pendingNormalizePathRef.current = target
+          router.replace(target)
+        }
+      } else if (!app.selectedDirectThreadId) {
+        const target = friendsPath()
+        if (pathname !== target && pendingNormalizePathRef.current !== target) {
+          pendingNormalizePathRef.current = target
+          router.replace(target)
+        }
       }
     }
   }, [
@@ -72,6 +86,36 @@ export function ChatAppShell(props: ChatAppShellProps) {
     pathname,
     router
   ])
+
+  async function handleLeaveServer(serverId: string): Promise<void> {
+    await app.handleLeaveServer(serverId)
+    if (routeKind === "server" && routeServerId === serverId) {
+      const target = friendsPath()
+      if (pathname !== target) {
+        router.push(target)
+      }
+    }
+  }
+
+  async function handleDeleteServer(serverId: string): Promise<void> {
+    await app.handleDeleteServer(serverId)
+    if (routeKind === "server" && routeServerId === serverId) {
+      const target = friendsPath()
+      if (pathname !== target) {
+        router.push(target)
+      }
+    }
+  }
+
+  async function handleCloseDirectThread(threadId: string): Promise<void> {
+    await app.handleCloseDirectThread(threadId)
+    if (routeKind === "dm" && routeThreadId === threadId) {
+      const target = friendsPath()
+      if (pathname !== target) {
+        router.push(target)
+      }
+    }
+  }
 
   if (app.isAuthInitializing && !app.me) {
     return (
@@ -143,6 +187,9 @@ export function ChatAppShell(props: ChatAppShellProps) {
         setInviteCode={app.setInviteCode}
         onCreateServer={app.handleCreateServer}
         onJoinServer={app.handleJoinServer}
+        onLeaveServer={handleLeaveServer}
+        onDeleteServer={handleDeleteServer}
+        copyToClipboard={app.copyToClipboard}
       />
 
       <ChannelRail
@@ -166,6 +213,10 @@ export function ChatAppShell(props: ChatAppShellProps) {
         getDirectThreadLabel={app.getDirectThreadLabel}
         getDirectThreadAvatar={app.getDirectThreadAvatar}
         onSignOut={app.handleSignOut}
+        onEditChannel={app.handleEditChannel}
+        onDeleteChannel={app.handleDeleteChannel}
+        onCloseDirectThread={handleCloseDirectThread}
+        copyToClipboard={app.copyToClipboard}
       />
 
       {showFriendsView ? (
@@ -183,6 +234,7 @@ export function ChatAppShell(props: ChatAppShellProps) {
           onOpenDirectThread={app.handleOpenDirectThread}
           getUserLabel={app.getUserLabel}
           getUserPresenceStatus={app.getUserPresenceStatus}
+          onRemoveFriend={app.handleRemoveFriend}
         />
       ) : (
         <ChatThread
@@ -204,6 +256,7 @@ export function ChatAppShell(props: ChatAppShellProps) {
           onAddReaction={app.handleAddReaction}
           onRemoveReaction={app.handleRemoveReaction}
           getAuthorLabel={app.getAuthorLabel}
+          copyToClipboard={app.copyToClipboard}
         />
       )}
     </div>

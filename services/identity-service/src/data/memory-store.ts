@@ -102,6 +102,32 @@ export class MemoryStore implements IdentityStore {
     this.state.friendsByUserId.set(friendId, friendFriends)
   }
 
+  async removeFriend(userId: string, friendId: string): Promise<boolean> {
+    const userFriends = this.state.friendsByUserId.get(userId)
+    const friendFriends = this.state.friendsByUserId.get(friendId)
+
+    const removedFromUser = userFriends ? userFriends.delete(friendId) : false
+    const removedFromFriend = friendFriends ? friendFriends.delete(userId) : false
+
+    if (userFriends) {
+      this.state.friendsByUserId.set(userId, userFriends)
+    }
+    if (friendFriends) {
+      this.state.friendsByUserId.set(friendId, friendFriends)
+    }
+
+    for (const request of this.state.friendRequestsById.values()) {
+      const isPair =
+        (request.fromUserId === userId && request.toUserId === friendId) ||
+        (request.fromUserId === friendId && request.toUserId === userId)
+      if (isPair && request.status === "pending") {
+        this.state.friendRequestsById.delete(request.id)
+      }
+    }
+
+    return removedFromUser || removedFromFriend
+  }
+
   async createFriendRequest(fromUserId: string, toUserId: string): Promise<FriendRequest> {
     if (fromUserId === toUserId) {
       throw new Error("You cannot send a friend request to yourself.")

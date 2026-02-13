@@ -241,6 +241,38 @@ export class PostgresStore implements IdentityStore {
     })
   }
 
+  async removeFriend(userId: string, friendId: string): Promise<boolean> {
+    const result = await this.sql.begin(async (tx) => {
+      const first = await tx<{ user_id: string }[]>`
+        DELETE FROM friendships
+        WHERE user_id = ${userId}
+          AND friend_id = ${friendId}
+        RETURNING user_id
+      `
+
+      const second = await tx<{ user_id: string }[]>`
+        DELETE FROM friendships
+        WHERE user_id = ${friendId}
+          AND friend_id = ${userId}
+        RETURNING user_id
+      `
+
+      await tx`
+        DELETE FROM friend_requests
+        WHERE status = 'pending'
+          AND (
+            (from_user_id = ${userId} AND to_user_id = ${friendId})
+            OR
+            (from_user_id = ${friendId} AND to_user_id = ${userId})
+          )
+      `
+
+      return first.length > 0 || second.length > 0
+    })
+
+    return result
+  }
+
   async listFriends(userId: string): Promise<User[]> {
     const rows = await this.sql<PublicUserRow[]>`
       SELECT u.id, u.email, u.username, u.display_name, u.created_at

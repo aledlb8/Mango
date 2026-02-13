@@ -116,6 +116,33 @@ export async function handleListFriends(request: Request, ctx: RouteContext): Pr
   return json(ctx.corsOrigin, 200, friends)
 }
 
+export async function handleRemoveFriend(
+  request: Request,
+  friendUserId: string,
+  ctx: RouteContext
+): Promise<Response> {
+  const user = await getAuthenticatedUser(request, ctx.store)
+  if (!user) {
+    return error(ctx.corsOrigin, 401, "Unauthorized.")
+  }
+
+  if (friendUserId === user.id) {
+    return error(ctx.corsOrigin, 400, "You cannot remove yourself.")
+  }
+
+  const friend = await ctx.store.findUserById(friendUserId)
+  if (!friend) {
+    return error(ctx.corsOrigin, 404, "User not found.")
+  }
+
+  const removed = await ctx.store.removeFriend(user.id, friendUserId)
+  if (!removed) {
+    return error(ctx.corsOrigin, 404, "Friend relationship not found.")
+  }
+
+  return json(ctx.corsOrigin, 200, { status: "ok" as const })
+}
+
 export async function handleGetUserById(
   request: Request,
   userId: string,

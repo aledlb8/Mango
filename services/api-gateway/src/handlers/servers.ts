@@ -35,3 +35,57 @@ export async function handleListServers(request: Request, ctx: RouteContext): Pr
 
   return json(ctx.corsOrigin, 200, servers)
 }
+
+export async function handleLeaveServer(
+  request: Request,
+  serverId: string,
+  ctx: RouteContext
+): Promise<Response> {
+  const user = await getAuthenticatedUser(request, ctx.store)
+  if (!user) {
+    return error(ctx.corsOrigin, 401, "Unauthorized.")
+  }
+
+  const server = await ctx.store.getServerById(serverId)
+  if (!server) {
+    return error(ctx.corsOrigin, 404, "Server not found.")
+  }
+
+  if (server.ownerId === user.id) {
+    return error(ctx.corsOrigin, 400, "Server owner cannot leave. Delete the server instead.")
+  }
+
+  const left = await ctx.store.leaveServer(serverId, user.id)
+  if (!left) {
+    return error(ctx.corsOrigin, 404, "You're not a member of this server.")
+  }
+
+  return json(ctx.corsOrigin, 200, { status: "ok" as const })
+}
+
+export async function handleDeleteServer(
+  request: Request,
+  serverId: string,
+  ctx: RouteContext
+): Promise<Response> {
+  const user = await getAuthenticatedUser(request, ctx.store)
+  if (!user) {
+    return error(ctx.corsOrigin, 401, "Unauthorized.")
+  }
+
+  const server = await ctx.store.getServerById(serverId)
+  if (!server) {
+    return error(ctx.corsOrigin, 404, "Server not found.")
+  }
+
+  if (server.ownerId !== user.id) {
+    return error(ctx.corsOrigin, 403, "Only the server owner can delete this server.")
+  }
+
+  const deleted = await ctx.store.deleteServer(serverId)
+  if (!deleted) {
+    return error(ctx.corsOrigin, 404, "Server not found.")
+  }
+
+  return json(ctx.corsOrigin, 200, { status: "ok" as const })
+}

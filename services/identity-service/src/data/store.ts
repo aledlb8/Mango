@@ -18,6 +18,7 @@ export interface IdentityStore {
 
   searchUsers(query: string, excludeUserId: string): Promise<User[]>
   addFriend(userId: string, friendId: string): Promise<void>
+  removeFriend(userId: string, friendId: string): Promise<boolean>
   listFriends(userId: string): Promise<User[]>
   createFriendRequest(fromUserId: string, toUserId: string): Promise<FriendRequest>
   listFriendRequests(userId: string): Promise<FriendRequest[]>

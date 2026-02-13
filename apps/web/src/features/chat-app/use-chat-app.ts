@@ -12,11 +12,15 @@ import {
   createMessage,
   createServer,
   createServerInvite,
+  deleteChannel,
   deleteMessage,
+  deleteServer,
   getBulkPresence,
   getMe,
   getUserById,
   joinServerByInvite,
+  leaveDirectThread,
+  leaveServer,
   listChannels,
   listDirectThreadMessages,
   listDirectThreads,
@@ -25,6 +29,7 @@ import {
   listMessages,
   listServers,
   login,
+  removeFriend,
   register,
   respondFriendRequest,
   removeReaction,
@@ -32,6 +37,7 @@ import {
   searchUsers,
   sendChannelTyping,
   sendDirectThreadTyping,
+  updateChannel,
   updateChannelReadMarker,
   updateDirectThreadReadMarker,
   updateMyPresence,
@@ -1405,6 +1411,172 @@ export function useChatApp(route: ChatAppRoute, initialToken: string | null, ini
     return usersById[otherParticipantId]?.displayName ?? thread.title
   }
 
+  async function handleLeaveServer(serverId: string): Promise<void> {
+    if (!token) {
+      return
+    }
+
+    setBusyKey("server-leave")
+    setErrorMessage(null)
+    setStatusMessage(null)
+
+    try {
+      await leaveServer(token, serverId)
+      setServers((current) => current.filter((server) => server.id !== serverId))
+
+      if (selectedServerId === serverId) {
+        setSelectedServerId(null)
+        setSelectedChannelId(null)
+        setChannels([])
+        setMessages([])
+        setLatestInviteCode(null)
+      }
+
+      setStatusMessage("Left server.")
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not leave server.")
+    } finally {
+      setBusyKey(null)
+    }
+  }
+
+  async function handleDeleteServer(serverId: string): Promise<void> {
+    if (!token) {
+      return
+    }
+
+    setBusyKey("server-delete")
+    setErrorMessage(null)
+    setStatusMessage(null)
+
+    try {
+      await deleteServer(token, serverId)
+      setServers((current) => current.filter((server) => server.id !== serverId))
+
+      if (selectedServerId === serverId) {
+        setSelectedServerId(null)
+        setSelectedChannelId(null)
+        setChannels([])
+        setMessages([])
+        setLatestInviteCode(null)
+      }
+
+      setStatusMessage("Server deleted.")
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not delete server.")
+    } finally {
+      setBusyKey(null)
+    }
+  }
+
+  async function handleEditChannel(channelId: string, name: string): Promise<void> {
+    if (!token) {
+      return
+    }
+
+    const normalizedName = name.trim()
+    if (!normalizedName) {
+      setErrorMessage("Channel name is required.")
+      return
+    }
+
+    setBusyKey("channel-edit")
+    setErrorMessage(null)
+    setStatusMessage(null)
+
+    try {
+      const updated = await updateChannel(token, channelId, { name: normalizedName })
+      setChannels((current) =>
+        current.map((channel) => (channel.id === updated.id ? updated : channel))
+      )
+      setStatusMessage(`Renamed #${updated.name}.`)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not rename channel.")
+    } finally {
+      setBusyKey(null)
+    }
+  }
+
+  async function handleDeleteChannel(channelId: string): Promise<void> {
+    if (!token) {
+      return
+    }
+
+    setBusyKey("channel-delete")
+    setErrorMessage(null)
+    setStatusMessage(null)
+
+    try {
+      await deleteChannel(token, channelId)
+      const nextChannels = channels.filter((channel) => channel.id !== channelId)
+      setChannels(nextChannels)
+
+      if (selectedChannelId === channelId) {
+        setSelectedChannelId(nextChannels[0]?.id ?? null)
+        setMessages([])
+      }
+
+      setStatusMessage("Channel deleted.")
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not delete channel.")
+    } finally {
+      setBusyKey(null)
+    }
+  }
+
+  async function handleRemoveFriend(userId: string): Promise<void> {
+    if (!token) {
+      return
+    }
+
+    setBusyKey("friend-remove")
+    setErrorMessage(null)
+    setStatusMessage(null)
+
+    try {
+      await removeFriend(token, userId)
+      setFriends((current) => current.filter((friend) => friend.id !== userId))
+      setFriendRequests((current) =>
+        current.filter((request) => request.fromUserId !== userId && request.toUserId !== userId)
+      )
+      setStatusMessage("Friend removed.")
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not remove friend.")
+    } finally {
+      setBusyKey(null)
+    }
+  }
+
+  async function handleCloseDirectThread(threadId: string): Promise<void> {
+    if (!token) {
+      return
+    }
+
+    setBusyKey("direct-thread-close")
+    setErrorMessage(null)
+    setStatusMessage(null)
+
+    try {
+      await leaveDirectThread(token, threadId)
+      setDirectThreads((current) => current.filter((thread) => thread.id !== threadId))
+
+      if (selectedDirectThreadId === threadId) {
+        setSelectedDirectThreadId(null)
+        setMessages([])
+      }
+
+      setStatusMessage("Conversation closed.")
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not close conversation.")
+    } finally {
+      setBusyKey(null)
+    }
+  }
+
+  function copyToClipboard(text: string): void {
+    void navigator.clipboard.writeText(text).catch(() => {})
+  }
+
   return {
     token,
     me,
@@ -1480,6 +1652,13 @@ export function useChatApp(route: ChatAppRoute, initialToken: string | null, ini
     getUserLabel,
     getUserPresenceStatus,
     getDirectThreadLabel,
-    getDirectThreadAvatar
+    getDirectThreadAvatar,
+    handleLeaveServer,
+    handleDeleteServer,
+    handleEditChannel,
+    handleDeleteChannel,
+    handleRemoveFriend,
+    handleCloseDirectThread,
+    copyToClipboard
   }
 }

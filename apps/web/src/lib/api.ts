@@ -261,6 +261,13 @@ export function listFriends(token: string) {
   return request<User[]>("/v1/friends", { token })
 }
 
+export function removeFriend(token: string, friendUserId: string) {
+  return request<{ status: "ok" }>(`/v1/friends/${encodeURIComponent(friendUserId)}`, {
+    method: "DELETE",
+    token
+  })
+}
+
 export function listFriendRequests(token: string) {
   return request<FriendRequest[]>("/v1/friends/requests", { token })
 }
@@ -315,6 +322,20 @@ export function createServer(token: string, payload: { name: string }) {
   return request<Server>("/v1/servers", { method: "POST", token, body: payload })
 }
 
+export function deleteServer(token: string, serverId: string) {
+  return request<{ status: "ok" }>(`/v1/servers/${encodeURIComponent(serverId)}`, {
+    method: "DELETE",
+    token
+  })
+}
+
+export function leaveServer(token: string, serverId: string) {
+  return request<{ status: "ok" }>(`/v1/servers/${encodeURIComponent(serverId)}/members/@me`, {
+    method: "DELETE",
+    token
+  })
+}
+
 export function joinServerByInvite(token: string, code: string) {
   return request<Server>(`/v1/invites/${encodeURIComponent(code)}/join`, {
     method: "POST",
@@ -346,6 +367,21 @@ export function createChannel(token: string, serverId: string, payload: { name: 
   })
 }
 
+export function updateChannel(token: string, channelId: string, payload: { name: string }) {
+  return request<Channel>(`/v1/channels/${encodeURIComponent(channelId)}`, {
+    method: "PATCH",
+    token,
+    body: payload
+  })
+}
+
+export function deleteChannel(token: string, channelId: string) {
+  return request<{ status: "ok" }>(`/v1/channels/${encodeURIComponent(channelId)}`, {
+    method: "DELETE",
+    token
+  })
+}
+
 export function listDirectThreads(token: string) {
   return request<DirectThread[]>("/v1/direct-threads", { token })
 }
@@ -363,6 +399,13 @@ export function createDirectThread(
 
 export function listDirectThreadMessages(token: string, threadId: string) {
   return request<Message[]>(`/v1/direct-threads/${encodeURIComponent(threadId)}/messages`, { token })
+}
+
+export function leaveDirectThread(token: string, threadId: string) {
+  return request<{ status: "ok" }>(`/v1/direct-threads/${encodeURIComponent(threadId)}/participants/@me`, {
+    method: "DELETE",
+    token
+  })
 }
 
 export function createDirectThreadMessage(

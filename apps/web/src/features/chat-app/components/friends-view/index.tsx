@@ -22,6 +22,7 @@ type FriendsViewProps = {
   onOpenDirectThread: (friendId: string) => Promise<void>
   getUserLabel: (userId: string) => string
   getUserPresenceStatus: (userId: string) => "online" | "idle" | "dnd" | "offline"
+  onRemoveFriend: (userId: string) => Promise<void>
 }
 
 export function FriendsView(props: FriendsViewProps) {
@@ -77,6 +78,7 @@ export function FriendsView(props: FriendsViewProps) {
               busyKey={props.busyKey}
               onOpenDirectThread={props.onOpenDirectThread}
               getUserPresenceStatus={props.getUserPresenceStatus}
+              onRemoveFriend={props.onRemoveFriend}
             />
           )}
           {activeTab === "pending" && (
