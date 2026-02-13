@@ -45,12 +45,12 @@ async function main() {
   await waitForPostgresReady();
 
   const processSpecs: ProcSpec[] = [
-    { label: "api-gateway", command: ["bun", "run", "dev"], cwd: "services/api-gateway" },
-    { label: "identity-service", command: ["bun", "run", "dev"], cwd: "services/identity-service" },
-    { label: "community-service", command: ["bun", "run", "dev"], cwd: "services/community-service" },
-    { label: "messaging-service", command: ["bun", "run", "dev"], cwd: "services/messaging-service" },
-    { label: "media-service", command: ["bun", "run", "dev"], cwd: "services/media-service" },
-    { label: "notification-worker", command: ["bun", "run", "dev"], cwd: "workers/notification-worker" },
+    { label: "api-gateway", command: ["bun", "--watch", "services/api-gateway/src/index.ts"] },
+    { label: "identity-service", command: ["bun", "--watch", "services/identity-service/src/index.ts"] },
+    { label: "community-service", command: ["bun", "--watch", "services/community-service/src/index.ts"] },
+    { label: "messaging-service", command: ["bun", "--watch", "services/messaging-service/src/index.ts"] },
+    { label: "media-service", command: ["bun", "--watch", "services/media-service/src/index.ts"] },
+    { label: "notification-worker", command: ["bun", "--watch", "workers/notification-worker/src/index.ts"] },
     { label: "realtime-gateway", command: ["go", "run", "."], cwd: "services/realtime-gateway" },
     { label: "presence-service", command: ["go", "run", "."], cwd: "services/presence-service" },
     { label: "voice-signaling", command: ["go", "run", "."], cwd: "services/voice-signaling" },
