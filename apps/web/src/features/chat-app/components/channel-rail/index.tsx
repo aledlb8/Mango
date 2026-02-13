@@ -6,6 +6,7 @@ import { UserPanel } from "./user-panel"
 
 type ChannelRailProps = {
   me: User
+  viewMode: "server" | "friends"
   selectedServer: Server | null
   selectedChannelId: string | null
   selectedDirectThreadId: string | null
@@ -27,9 +28,11 @@ type ChannelRailProps = {
 }
 
 export function ChannelRail(props: ChannelRailProps) {
+  const showServerPanel = props.viewMode === "server"
+
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col bg-sidebar">
-      {props.selectedServer ? (
+      {showServerPanel ? (
         <ServerPanel
           selectedServer={props.selectedServer}
           selectedChannelId={props.selectedChannelId}

@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation"
+import { resolveHomePath } from "@/lib/server-auth"
 
-export default function HomePage() {
-  redirect("/friends")
+export default async function HomePage() {
+  redirect(await resolveHomePath())
 }

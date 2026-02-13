@@ -46,16 +46,6 @@ export function ChatThread(props: ChatThreadProps) {
         ) : (
           <h2 className="text-sm font-semibold text-muted-foreground">Select a channel</h2>
         )}
-        <div className="ml-auto flex items-center gap-2">
-          <span
-            className={`inline-block h-2 w-2 rounded-full ${
-              props.realtimeStatus === "connected" ? "bg-green-500" : "bg-muted-foreground"
-            }`}
-          />
-          <span className="text-xs text-muted-foreground">
-            {props.realtimeStatus === "connected" ? "Connected" : "Offline"}
-          </span>
-        </div>
       </header>
 
       {/* Messages */}
@@ -86,7 +76,7 @@ export function ChatThread(props: ChatThreadProps) {
             prev !== null &&
             prev.authorId === message.authorId &&
             new Date(message.createdAt).getTime() - new Date(prev.createdAt).getTime() <
-              5 * 60 * 1000
+            5 * 60 * 1000
 
           return (
             <MessageItem

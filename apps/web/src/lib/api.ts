@@ -1,5 +1,17 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001"
 
+export class ApiError extends Error {
+  readonly status: number
+  readonly retryAfterSeconds: number | null
+
+  constructor(message: string, status: number, retryAfterSeconds: number | null = null) {
+    super(message)
+    this.name = "ApiError"
+    this.status = status
+    this.retryAfterSeconds = retryAfterSeconds
+  }
+}
+
 export type User = {
   id: string
   email: string
@@ -169,7 +181,13 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   const data = await response.json().catch(() => null)
   if (!response.ok) {
-    throw new Error(data?.error ?? `Request failed (${response.status})`)
+    const retryAfterRaw = response.headers.get("Retry-After")
+    const retryAfter = retryAfterRaw ? Number.parseInt(retryAfterRaw, 10) : Number.NaN
+    throw new ApiError(
+      data?.error ?? `Request failed (${response.status})`,
+      response.status,
+      Number.isFinite(retryAfter) ? Math.max(0, retryAfter) : null
+    )
   }
 
   return data as T

@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 
 type ServerPanelProps = {
-  selectedServer: Server
+  selectedServer: Server | null
   selectedChannelId: string | null
   channels: Channel[]
   busyKey: string | null
@@ -33,13 +33,13 @@ export function ServerPanel(props: ServerPanelProps) {
       {/* Server header */}
       <div className="flex h-12 items-center justify-between border-b border-sidebar-border px-4">
         <h2 className="truncate text-sm font-semibold text-sidebar-foreground">
-          {props.selectedServer.name}
+          {props.selectedServer?.name ?? "Loading server..."}
         </h2>
         <Button
           variant="sidebar-action"
           size="sidebar-action"
           onClick={() => void props.onCreateInvite()}
-          disabled={props.busyKey === "invite-create"}
+          disabled={!props.selectedServer || props.busyKey === "invite-create"}
           title="Create invite link"
         >
           <Link className="h-4 w-4" />

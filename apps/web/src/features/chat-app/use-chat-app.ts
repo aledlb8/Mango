@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import type { FormEvent } from "react"
 import {
+  ApiError,
   addReaction,
   createChannel,
   createDirectThread,
@@ -57,6 +58,43 @@ import {
 } from "./state-utils"
 import type { ChatAppRoute } from "./route"
 
+const SESSION_CACHE_KEY = "mango_session_cache"
+
+type CachedSession = {
+  token: string
+  user: User
+}
+
+function writeCachedSession(token: string, user: User): void {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  try {
+    window.sessionStorage.setItem(
+      SESSION_CACHE_KEY,
+      JSON.stringify({
+        token,
+        user
+      } satisfies CachedSession)
+    )
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function clearCachedSession(): void {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  try {
+    window.sessionStorage.removeItem(SESSION_CACHE_KEY)
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
 function urlBase64ToArrayBuffer(base64String: string): ArrayBuffer {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4)
   const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/")
@@ -71,14 +109,18 @@ function urlBase64ToArrayBuffer(base64String: string): ArrayBuffer {
   return buffer
 }
 
-export function useChatApp(route: ChatAppRoute) {
+export function useChatApp(route: ChatAppRoute, initialToken: string | null, initialMe: User | null) {
   const routeKind = route.kind
   const routeServerId = routeKind === "server" ? route.serverId : null
   const routeChannelId = routeKind === "server" ? (route.channelId ?? null) : null
   const routeThreadId = routeKind === "dm" ? route.threadId : null
+  const initialSelectedServerId = routeKind === "server" ? routeServerId : null
+  const initialSelectedChannelId = routeKind === "server" ? routeChannelId : null
+  const initialSelectedDirectThreadId = routeKind === "dm" ? routeThreadId : null
 
-  const [token, setToken] = useState<string | null>(null)
-  const [me, setMe] = useState<User | null>(null)
+  const [token, setToken] = useState<string | null>(initialToken)
+  const [me, setMe] = useState<User | null>(initialMe)
+  const [isAuthInitializing, setIsAuthInitializing] = useState<boolean>(Boolean(initialToken) && !initialMe)
 
   const [servers, setServers] = useState<Server[]>([])
   const [channels, setChannels] = useState<Channel[]>([])
@@ -91,9 +133,9 @@ export function useChatApp(route: ChatAppRoute) {
   const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([])
   const [friendSearchResults, setFriendSearchResults] = useState<User[]>([])
 
-  const [selectedServerId, setSelectedServerId] = useState<string | null>(null)
-  const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null)
-  const [selectedDirectThreadId, setSelectedDirectThreadId] = useState<string | null>(null)
+  const [selectedServerId, setSelectedServerId] = useState<string | null>(initialSelectedServerId)
+  const [selectedChannelId, setSelectedChannelId] = useState<string | null>(initialSelectedChannelId)
+  const [selectedDirectThreadId, setSelectedDirectThreadId] = useState<string | null>(initialSelectedDirectThreadId)
 
   const [registerEmail, setRegisterEmail] = useState("")
   const [registerUsername, setRegisterUsername] = useState("")
@@ -117,6 +159,7 @@ export function useChatApp(route: ChatAppRoute) {
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeStatus>("disconnected")
+  const [sessionRetryNonce, setSessionRetryNonce] = useState<number>(0)
 
   const socketRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -128,6 +171,7 @@ export function useChatApp(route: ChatAppRoute) {
   const typingHeartbeatRef = useRef<number>(0)
   const typingActiveRef = useRef<boolean>(false)
   const lastReadMessageByConversationRef = useRef<Record<string, string | null>>({})
+  const meRef = useRef<User | null>(initialMe)
 
   const selectedServer = useMemo(
     () => servers.find((server) => server.id === selectedServerId) ?? null,
@@ -165,14 +209,26 @@ export function useChatApp(route: ChatAppRoute) {
   const stableMessages = useMemo(() => dedupeMessages(messages), [messages])
 
   useEffect(() => {
-    const existing = getTokenFromCookie()
-    if (existing) {
-      setToken(existing)
-    }
-  }, [])
+    meRef.current = me
+  }, [me])
 
   useEffect(() => {
+    if (token) {
+      return
+    }
+
+    const cookieToken = getTokenFromCookie()
+    if (cookieToken) {
+      setToken(cookieToken)
+    }
+  }, [token])
+
+  useEffect(() => {
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+
     if (!token) {
+      setIsAuthInitializing(false)
+      clearCachedSession()
       setMe(null)
       setServers([])
       setChannels([])
@@ -189,9 +245,16 @@ export function useChatApp(route: ChatAppRoute) {
       setLatestInviteCode(null)
       setPendingAttachments([])
       setTypingUsersByConversation({})
-      return
+      return () => {
+        if (retryTimer) {
+          clearTimeout(retryTimer)
+        }
+      }
     }
 
+    if (!meRef.current) {
+      setIsAuthInitializing(true)
+    }
     void (async () => {
       try {
         const currentUser = await getMe(token)
@@ -208,25 +271,12 @@ export function useChatApp(route: ChatAppRoute) {
         const nextDirectThreads = directThreadsResult.status === "fulfilled" ? directThreadsResult.value : []
 
         setMe(currentUser)
+        writeCachedSession(token, currentUser)
         setServers(nextServers)
         setFriends(nextFriends)
         setFriendRequests(nextFriendRequests)
         setDirectThreads(nextDirectThreads)
         setUsersById((current) => mergeUsersById(current, [currentUser, ...nextFriends]))
-        if (routeKind === "server") {
-          setSelectedServerId(routeServerId)
-          setSelectedDirectThreadId(null)
-        } else if (routeKind === "dm") {
-          setSelectedServerId(null)
-          setSelectedDirectThreadId(
-            routeThreadId && nextDirectThreads.some((thread) => thread.id === routeThreadId)
-              ? routeThreadId
-              : null
-          )
-        } else {
-          setSelectedServerId(null)
-          setSelectedDirectThreadId(null)
-        }
 
         if (
           serversResult.status === "rejected" ||
@@ -236,13 +286,42 @@ export function useChatApp(route: ChatAppRoute) {
         ) {
           setStatusMessage("Logged in, but some sections are temporarily unavailable.")
         }
+
+        setIsAuthInitializing(false)
       } catch (error) {
-        clearTokenCookie()
-        setToken(null)
-        setErrorMessage(error instanceof Error ? error.message : "Session failed.")
+        if (error instanceof ApiError && error.status === 401) {
+          clearTokenCookie()
+          clearCachedSession()
+          setToken(null)
+          setErrorMessage("Session expired. Please sign in again.")
+          setIsAuthInitializing(false)
+          return
+        }
+
+        setErrorMessage(error instanceof Error ? error.message : "Session restore failed.")
+
+        if (meRef.current) {
+          setIsAuthInitializing(false)
+          return
+        }
+
+        const retryAfterMs =
+          error instanceof ApiError && error.retryAfterSeconds !== null
+            ? Math.max(1000, error.retryAfterSeconds * 1000)
+            : 1500
+
+        retryTimer = setTimeout(() => {
+          setSessionRetryNonce((current) => current + 1)
+        }, retryAfterMs)
       }
     })()
-  }, [token, routeKind, routeServerId, routeThreadId])
+
+    return () => {
+      if (retryTimer) {
+        clearTimeout(retryTimer)
+      }
+    }
+  }, [token, sessionRetryNonce])
 
   useEffect(() => {
     if (!token) {
@@ -265,9 +344,7 @@ export function useChatApp(route: ChatAppRoute) {
 
     setSelectedServerId(routeServerId)
     setSelectedDirectThreadId(null)
-    if (routeChannelId) {
-      setSelectedChannelId(routeChannelId)
-    }
+    setSelectedChannelId(routeChannelId)
   }, [token, routeKind, routeServerId, routeChannelId, routeThreadId])
 
   useEffect(() => {
@@ -842,6 +919,8 @@ export function useChatApp(route: ChatAppRoute) {
         password: registerPassword
       })
       setTokenCookie(response.token)
+      setMe(response.user)
+      writeCachedSession(response.token, response.user)
       setUsersById((current) => mergeUsersById(current, [response.user]))
       setToken(response.token)
       setStatusMessage(`Welcome, ${response.user.displayName}.`)
@@ -865,6 +944,8 @@ export function useChatApp(route: ChatAppRoute) {
         password: loginPassword
       })
       setTokenCookie(response.token)
+      setMe(response.user)
+      writeCachedSession(response.token, response.user)
       setUsersById((current) => mergeUsersById(current, [response.user]))
       setToken(response.token)
       setStatusMessage(`Welcome back, ${response.user.displayName}.`)
@@ -878,6 +959,7 @@ export function useChatApp(route: ChatAppRoute) {
 
   function handleSignOut() {
     clearTokenCookie()
+    clearCachedSession()
     setToken(null)
     setStatusMessage("Signed out.")
     setErrorMessage(null)
@@ -1154,7 +1236,15 @@ export function useChatApp(route: ChatAppRoute) {
         void request.catch(() => {})
       }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Could not send message.")
+      if (error instanceof ApiError && error.status === 429) {
+        const suffix =
+          error.retryAfterSeconds !== null && error.retryAfterSeconds > 0
+            ? ` Try again in ${error.retryAfterSeconds}s.`
+            : ""
+        setErrorMessage(`You're sending messages too quickly.${suffix}`)
+      } else {
+        setErrorMessage(error instanceof Error ? error.message : "Could not send message.")
+      }
     } finally {
       setBusyKey(null)
     }
@@ -1318,6 +1408,7 @@ export function useChatApp(route: ChatAppRoute) {
   return {
     token,
     me,
+    isAuthInitializing,
     servers,
     channels,
     directThreads,

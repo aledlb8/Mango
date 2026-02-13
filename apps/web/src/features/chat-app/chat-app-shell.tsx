@@ -1,50 +1,63 @@
 "use client"
 
-import { useEffect } from "react"
-import { useRouter } from "next/navigation"
-import { AuthGate, ChannelRail, ChatSidebar, ChatThread, FriendsView } from "@/features/chat-app/components"
-import { dmPath, friendsPath, serverChannelPath, serverPath, type ChatAppRoute } from "./route"
+import { useEffect, useMemo, useRef } from "react"
+import { usePathname, useRouter } from "next/navigation"
+import { ChannelRail, ChatSidebar, ChatThread, FriendsView } from "@/features/chat-app/components"
+import type { User } from "@/lib/api"
+import { dmPath, friendsPath, routeFromPathname, serverChannelPath, serverPath } from "./route"
 import { useChatApp } from "./use-chat-app"
 
 type ChatAppShellProps = {
-  route: ChatAppRoute
+  initialToken?: string | null
+  initialMe?: User | null
 }
 
 export function ChatAppShell(props: ChatAppShellProps) {
   const router = useRouter()
-  const routeKind = props.route.kind
-  const routeServerId = routeKind === "server" ? props.route.serverId : null
-  const routeChannelId = routeKind === "server" ? (props.route.channelId ?? null) : null
-  const routeThreadId = routeKind === "dm" ? props.route.threadId : null
+  const pathname = usePathname()
+  const pendingNormalizePathRef = useRef<string | null>(null)
+  const route = useMemo(() => routeFromPathname(pathname), [pathname])
+  const routeKind = route.kind
+  const routeServerId = routeKind === "server" ? route.serverId : null
+  const routeChannelId = routeKind === "server" ? (route.channelId ?? null) : null
+  const routeThreadId = routeKind === "dm" ? route.threadId : null
 
-  const app = useChatApp(props.route)
+  const app = useChatApp(route, props.initialToken ?? null, props.initialMe ?? null)
+
+  useEffect(() => {
+    if (pendingNormalizePathRef.current && pathname === pendingNormalizePathRef.current) {
+      pendingNormalizePathRef.current = null
+    }
+  }, [pathname])
+
+  useEffect(() => {
+    if (!app.isAuthInitializing && (!app.token || !app.me)) {
+      router.replace("/auth")
+    }
+  }, [app.isAuthInitializing, app.token, app.me, router])
 
   useEffect(() => {
     if (!app.token || !app.me) {
       return
     }
 
-    if (app.selectedServerId) {
-      if (routeKind !== "server" || routeServerId !== app.selectedServerId) {
-        router.replace(serverPath(app.selectedServerId))
-        return
-      }
-
-      if (app.selectedChannelId && routeChannelId !== app.selectedChannelId) {
-        router.replace(serverChannelPath(app.selectedServerId, app.selectedChannelId))
-      }
-      return
-    }
-
-    if (app.selectedDirectThreadId) {
-      if (routeKind !== "dm" || routeThreadId !== app.selectedDirectThreadId) {
-        router.replace(dmPath(app.selectedDirectThreadId))
+    if (routeKind === "server" && routeServerId && app.selectedServerId === routeServerId) {
+      if (!routeChannelId && app.selectedChannelId) {
+        const target = serverChannelPath(routeServerId, app.selectedChannelId)
+        if (pathname !== target && pendingNormalizePathRef.current !== target) {
+          pendingNormalizePathRef.current = target
+          router.replace(target)
+        }
       }
       return
     }
 
-    if (routeKind !== "friends") {
-      router.replace(friendsPath())
+    if (routeKind === "dm" && routeThreadId && app.selectedDirectThreadId && routeThreadId !== app.selectedDirectThreadId) {
+      const target = dmPath(app.selectedDirectThreadId)
+      if (pathname !== target && pendingNormalizePathRef.current !== target) {
+        pendingNormalizePathRef.current = target
+        router.replace(target)
+      }
     }
   }, [
     app.token,
@@ -56,61 +69,64 @@ export function ChatAppShell(props: ChatAppShellProps) {
     routeServerId,
     routeChannelId,
     routeThreadId,
+    pathname,
     router
   ])
 
+  if (app.isAuthInitializing && !app.me) {
+    return (
+      <main className="flex h-screen items-center justify-center bg-background">
+        <p className="text-sm text-muted-foreground">Loading session...</p>
+      </main>
+    )
+  }
+
   function handleSelectHome(): void {
-    app.handleSelectFriendsView()
-    router.push(friendsPath())
+    const target = friendsPath()
+    if (pathname !== target) {
+      router.push(target)
+    }
   }
 
   function handleSelectServer(serverId: string): void {
-    app.setSelectedServerId(serverId)
-    app.setSelectedDirectThreadId(null)
-    router.push(serverPath(serverId))
+    const target = serverPath(serverId)
+    if (pathname !== target) {
+      router.push(target)
+    }
   }
 
   function handleSelectChannel(channelId: string): void {
-    app.setSelectedChannelId(channelId)
     if (app.selectedServerId) {
-      router.push(serverChannelPath(app.selectedServerId, channelId))
+      const target = serverChannelPath(app.selectedServerId, channelId)
+      if (pathname !== target) {
+        router.push(target)
+      }
     }
   }
 
   function handleSelectDirectThread(threadId: string): void {
-    app.handleSelectDirectThread(threadId)
-    router.push(dmPath(threadId))
+    const target = dmPath(threadId)
+    if (pathname !== target) {
+      router.push(target)
+    }
   }
 
   function handleSelectFriendsView(): void {
-    app.handleSelectFriendsView()
-    router.push(friendsPath())
+    const target = friendsPath()
+    if (pathname !== target) {
+      router.push(target)
+    }
   }
 
   if (!app.token || !app.me) {
     return (
-      <AuthGate
-        busyKey={app.busyKey}
-        registerEmail={app.registerEmail}
-        registerUsername={app.registerUsername}
-        registerDisplayName={app.registerDisplayName}
-        registerPassword={app.registerPassword}
-        loginIdentifier={app.loginIdentifier}
-        loginPassword={app.loginPassword}
-        onRegister={app.handleRegister}
-        onLogin={app.handleLogin}
-        setRegisterEmail={app.setRegisterEmail}
-        setRegisterUsername={app.setRegisterUsername}
-        setRegisterDisplayName={app.setRegisterDisplayName}
-        setRegisterPassword={app.setRegisterPassword}
-        setLoginIdentifier={app.setLoginIdentifier}
-        setLoginPassword={app.setLoginPassword}
-        errorMessage={app.errorMessage}
-      />
+      <main className="flex h-screen items-center justify-center bg-background">
+        <p className="text-sm text-muted-foreground">Redirecting to sign in...</p>
+      </main>
     )
   }
 
-  const showFriendsView = !app.selectedServer && !app.selectedDirectThread
+  const showFriendsView = routeKind === "friends"
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -131,6 +147,7 @@ export function ChatAppShell(props: ChatAppShellProps) {
 
       <ChannelRail
         me={app.me}
+        viewMode={routeKind === "server" ? "server" : "friends"}
         selectedServer={app.selectedServer}
         selectedChannelId={app.selectedChannelId}
         selectedDirectThreadId={app.selectedDirectThreadId}

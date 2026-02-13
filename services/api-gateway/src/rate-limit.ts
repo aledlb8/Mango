@@ -44,14 +44,20 @@ function readRateLimitIdentity(request: Request): string {
   return `ip:${readClientIp(request)}`
 }
 
+function isAuthenticatedRequest(request: Request): boolean {
+  const authorization = request.headers.get("authorization")
+  return Boolean(authorization?.startsWith("Bearer "))
+}
+
 function classifyRule(request: Request): RateLimitRule {
   const { pathname } = new URL(request.url)
   const method = request.method.toUpperCase()
+  const authenticated = isAuthenticatedRequest(request)
 
   if (method === "POST" && (pathname === "/v1/auth/login" || pathname === "/v1/auth/register")) {
     return {
       id: "auth",
-      limit: 15,
+      limit: 20,
       windowMs: 60_000
     }
   }
@@ -59,31 +65,31 @@ function classifyRule(request: Request): RateLimitRule {
   if (method === "POST" && /\/v1\/(channels\/[^/]+|direct-threads\/[^/]+)\/messages$/.test(pathname)) {
     return {
       id: "messages.create",
-      limit: 30,
-      windowMs: 10_000
+      limit: 60,
+      windowMs: 5_000
     }
   }
 
   if (method === "POST" && /\/v1\/(channels\/[^/]+|direct-threads\/[^/]+)\/typing$/.test(pathname)) {
     return {
       id: "typing",
-      limit: 60,
-      windowMs: 10_000
+      limit: 240,
+      windowMs: 5_000
     }
   }
 
   if ((method === "POST" || method === "DELETE") && /\/v1\/messages\/[^/]+\/reactions/.test(pathname)) {
     return {
       id: "reactions",
-      limit: 40,
-      windowMs: 10_000
+      limit: 120,
+      windowMs: 5_000
     }
   }
 
   return {
-    id: "default",
-    limit: 300,
-    windowMs: 60_000
+    id: authenticated ? "default.authenticated" : "default.unauthenticated",
+    limit: authenticated ? 1200 : 300,
+    windowMs: authenticated ? 30_000 : 60_000
   }
 }
 
