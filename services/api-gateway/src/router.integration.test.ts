@@ -22,7 +22,8 @@ import type {
   Server,
   ServerInvite,
   TypingIndicator,
-  User
+  User,
+  VoiceSession
 } from "@mango/contracts"
 import { MemoryStore } from "./data/memory-store"
 import { RealtimeHub } from "./realtime/hub"
@@ -40,6 +41,7 @@ type ServiceHits = {
   messaging: number
   media: number
   presence: number
+  voice: number
 }
 
 type SocketEvent = {
@@ -63,7 +65,8 @@ const serviceHits: ServiceHits = {
   community: 0,
   messaging: 0,
   media: 0,
-  presence: 0
+  presence: 0,
+  voice: 0
 }
 
 let identityServer: ReturnType<typeof Bun.serve> | null = null
@@ -71,6 +74,7 @@ let communityServer: ReturnType<typeof Bun.serve> | null = null
 let messagingServer: ReturnType<typeof Bun.serve> | null = null
 let mediaServer: ReturnType<typeof Bun.serve> | null = null
 let presenceServer: ReturnType<typeof Bun.serve> | null = null
+let voiceServer: ReturnType<typeof Bun.serve> | null = null
 let routeGatewayRequest: GatewayRouteFn
 const mediaAttachmentsById = new Map<string, Attachment>()
 
@@ -80,11 +84,14 @@ const originalEnv = {
   MESSAGING_SERVICE_URL: process.env.MESSAGING_SERVICE_URL,
   MEDIA_SERVICE_URL: process.env.MEDIA_SERVICE_URL,
   PRESENCE_SERVICE_URL: process.env.PRESENCE_SERVICE_URL,
+  VOICE_SIGNALING_SERVICE_URL: process.env.VOICE_SIGNALING_SERVICE_URL,
   PREFER_IDENTITY_SERVICE_PROXY: process.env.PREFER_IDENTITY_SERVICE_PROXY,
   PREFER_COMMUNITY_SERVICE_PROXY: process.env.PREFER_COMMUNITY_SERVICE_PROXY,
   PREFER_MESSAGING_SERVICE_PROXY: process.env.PREFER_MESSAGING_SERVICE_PROXY,
   PREFER_MEDIA_SERVICE_PROXY: process.env.PREFER_MEDIA_SERVICE_PROXY,
   PREFER_PRESENCE_SERVICE_PROXY: process.env.PREFER_PRESENCE_SERVICE_PROXY,
+  PREFER_VOICE_SIGNALING_PROXY: process.env.PREFER_VOICE_SIGNALING_PROXY,
+  ENABLE_SCREEN_SHARE: process.env.ENABLE_SCREEN_SHARE,
   DISABLE_RATE_LIMITING: process.env.DISABLE_RATE_LIMITING
 }
 
@@ -376,16 +383,174 @@ describe("api-gateway proxy integration", () => {
       }
     })
 
+    const voiceSessionsByTarget = new Map<string, VoiceSession>()
+
+    voiceServer = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        serviceHits.voice += 1
+
+        const { pathname } = new URL(request.url)
+        if (pathname === "/health") {
+          return Response.json({
+            service: "voice-signaling",
+            status: "ok",
+            timestamp: new Date().toISOString()
+          })
+        }
+
+        const match = pathname.match(
+          /^\/v1\/voice\/(channels|direct-threads)\/([^/]+)(?:\/(join|leave|state|heartbeat|screen-share))?$/
+        )
+        if (!match) {
+          return Response.json({ error: "Route not found." }, { status: 404 })
+        }
+
+        const targetKind: VoiceSession["targetKind"] = match[1] === "channels" ? "channel" : "direct_thread"
+        const targetId = decodeURIComponent(match[2] ?? "")
+        const action = match[3] ?? ""
+        const userId = request.headers.get("x-voice-user-id") ?? ""
+        const serverId = request.headers.get("x-voice-server-id")
+        if (!userId.trim()) {
+          return Response.json({ error: "Missing X-Voice-User-Id." }, { status: 401 })
+        }
+
+        const key = `${targetKind}:${targetId}`
+        const now = new Date().toISOString()
+        const existing = voiceSessionsByTarget.get(key)
+        const session: VoiceSession =
+          existing ??
+          ({
+            id: `vsn_${createUniqueSuffix()}`,
+            targetKind,
+            targetId,
+            serverId: serverId || null,
+            startedAt: now,
+            updatedAt: now,
+            reconnectGraceMs: 30_000,
+            features: {
+              screenShare: true
+            },
+            participants: [],
+            signaling: {
+              url: "ws://localhost:7880",
+              roomName: `test_${targetKind}_${targetId}`,
+              participantToken: `tok_${userId}_${createUniqueSuffix().slice(0, 6)}`
+            }
+          } satisfies VoiceSession)
+
+        session.updatedAt = now
+        session.serverId = serverId || session.serverId || null
+        session.signaling = {
+          ...session.signaling,
+          participantToken: `tok_${userId}_${createUniqueSuffix().slice(0, 6)}`
+        }
+
+        const currentParticipantIndex = session.participants.findIndex((participant) => participant.userId === userId)
+        const currentParticipant =
+          currentParticipantIndex >= 0
+            ? session.participants[currentParticipantIndex]
+            : {
+                userId,
+                muted: false,
+                deafened: false,
+                speaking: false,
+                screenSharing: false,
+                joinedAt: now,
+                lastSeenAt: now
+              }
+
+        if (action === "" && request.method === "GET") {
+          return Response.json(existing ?? null)
+        }
+
+        if (request.method !== "POST") {
+          return Response.json({ error: "Method not allowed." }, { status: 405 })
+        }
+
+        const payload = (await request.json().catch(() => null)) as
+          | {
+              muted?: boolean
+              deafened?: boolean
+              speaking?: boolean
+              screenSharing?: boolean
+            }
+          | null
+
+        if (action === "join") {
+          currentParticipant.muted = payload?.muted ?? currentParticipant.muted
+          currentParticipant.deafened = payload?.deafened ?? currentParticipant.deafened
+          currentParticipant.speaking = payload?.speaking ?? currentParticipant.speaking
+          currentParticipant.lastSeenAt = now
+          if (currentParticipant.deafened) {
+            currentParticipant.speaking = false
+          }
+          if (currentParticipantIndex >= 0) {
+            session.participants[currentParticipantIndex] = currentParticipant
+          } else {
+            session.participants.push(currentParticipant)
+          }
+          voiceSessionsByTarget.set(key, session)
+          return Response.json(session)
+        }
+
+        if (action === "leave") {
+          session.participants = session.participants.filter((participant) => participant.userId !== userId)
+          voiceSessionsByTarget.set(key, session)
+          return Response.json(session)
+        }
+
+        if (action === "state" || action === "heartbeat") {
+          if (currentParticipantIndex < 0) {
+            return Response.json({ error: "not connected to this voice session" }, { status: 404 })
+          }
+
+          if (typeof payload?.muted === "boolean") {
+            currentParticipant.muted = payload.muted
+          }
+          if (typeof payload?.deafened === "boolean") {
+            currentParticipant.deafened = payload.deafened
+          }
+          if (typeof payload?.speaking === "boolean") {
+            currentParticipant.speaking = payload.speaking
+          }
+          if (currentParticipant.deafened) {
+            currentParticipant.speaking = false
+          }
+          currentParticipant.lastSeenAt = now
+          session.participants[currentParticipantIndex] = currentParticipant
+          voiceSessionsByTarget.set(key, session)
+          return Response.json(session)
+        }
+
+        if (action === "screen-share") {
+          if (currentParticipantIndex < 0) {
+            return Response.json({ error: "not connected to this voice session" }, { status: 404 })
+          }
+          currentParticipant.screenSharing = Boolean(payload?.screenSharing)
+          currentParticipant.lastSeenAt = now
+          session.participants[currentParticipantIndex] = currentParticipant
+          voiceSessionsByTarget.set(key, session)
+          return Response.json(session)
+        }
+
+        return Response.json({ error: "Route not found." }, { status: 404 })
+      }
+    })
+
     process.env.IDENTITY_SERVICE_URL = `http://127.0.0.1:${identityServer.port}`
     process.env.COMMUNITY_SERVICE_URL = `http://127.0.0.1:${communityServer.port}`
     process.env.MESSAGING_SERVICE_URL = `http://127.0.0.1:${messagingServer.port}`
     process.env.MEDIA_SERVICE_URL = `http://127.0.0.1:${mediaServer.port}`
     process.env.PRESENCE_SERVICE_URL = `http://127.0.0.1:${presenceServer.port}`
+    process.env.VOICE_SIGNALING_SERVICE_URL = `http://127.0.0.1:${voiceServer.port}`
     process.env.PREFER_IDENTITY_SERVICE_PROXY = "true"
     process.env.PREFER_COMMUNITY_SERVICE_PROXY = "true"
     process.env.PREFER_MESSAGING_SERVICE_PROXY = "true"
     process.env.PREFER_MEDIA_SERVICE_PROXY = "true"
     process.env.PREFER_PRESENCE_SERVICE_PROXY = "true"
+    process.env.PREFER_VOICE_SIGNALING_PROXY = "true"
+    process.env.ENABLE_SCREEN_SHARE = "true"
     process.env.DISABLE_RATE_LIMITING = "true"
 
     const gatewayModule = await import("./router")
@@ -393,6 +558,7 @@ describe("api-gateway proxy integration", () => {
   })
 
   afterAll(() => {
+    voiceServer?.stop(true)
     presenceServer?.stop(true)
     mediaServer?.stop(true)
     messagingServer?.stop(true)
@@ -827,6 +993,157 @@ describe("api-gateway proxy integration", () => {
     expect(singlePresence.status).toBe(200)
     expect(singlePresence.body.userId).toBe(actor.user.id)
     expect(serviceHits.presence).toBeGreaterThan(hitsBeforePresence)
+  })
+
+  it("supports voice channels, calls, and realtime voice state updates", async () => {
+    const hitsBeforeVoice = serviceHits.voice
+
+    const owner = await registerUser("voiceowner")
+    const member = await registerUser("voicemember")
+
+    const createdServer = await callGateway<Server>({
+      method: "POST",
+      path: "/v1/servers",
+      token: owner.token,
+      body: { name: `voice-${createUniqueSuffix()}` }
+    })
+    expect(createdServer.status).toBe(201)
+
+    const voiceChannel = await callGateway<Channel>({
+      method: "POST",
+      path: `/v1/servers/${createdServer.body.id}/channels`,
+      token: owner.token,
+      body: {
+        name: `voice-${createUniqueSuffix().slice(0, 6)}`,
+        type: "voice"
+      }
+    })
+    expect(voiceChannel.status).toBe(201)
+    expect(voiceChannel.body.type).toBe("voice")
+
+    const invite = await callGateway<ServerInvite>({
+      method: "POST",
+      path: `/v1/servers/${createdServer.body.id}/invites`,
+      token: owner.token,
+      body: {}
+    })
+    expect(invite.status).toBe(201)
+
+    const joined = await callGateway<Server>({
+      method: "POST",
+      path: `/v1/invites/${invite.body.code}/join`,
+      token: member.token
+    })
+    expect(joined.status).toBe(200)
+
+    const memberVoiceEvents = attachRealtimeCollector(member.user.id, voiceChannel.body.id)
+
+    const joinedVoice = await callGateway<VoiceSession>({
+      method: "POST",
+      path: `/v1/voice/channels/${voiceChannel.body.id}/join`,
+      token: owner.token,
+      body: {
+        muted: false,
+        deafened: false,
+        speaking: true
+      }
+    })
+    expect(joinedVoice.status).toBe(200)
+    expect(joinedVoice.body.targetKind).toBe("channel")
+    expect(joinedVoice.body.targetId).toBe(voiceChannel.body.id)
+    expect(joinedVoice.body.participants.some((participant) => participant.userId === owner.user.id)).toBe(true)
+
+    const updatedVoiceState = await callGateway<VoiceSession>({
+      method: "POST",
+      path: `/v1/voice/channels/${voiceChannel.body.id}/state`,
+      token: owner.token,
+      body: {
+        muted: true,
+        speaking: false
+      }
+    })
+    expect(updatedVoiceState.status).toBe(200)
+    expect(
+      updatedVoiceState.body.participants.find((participant) => participant.userId === owner.user.id)?.muted
+    ).toBe(true)
+
+    const screenShareState = await callGateway<VoiceSession>({
+      method: "POST",
+      path: `/v1/voice/channels/${voiceChannel.body.id}/screen-share`,
+      token: owner.token,
+      body: {
+        screenSharing: true
+      }
+    })
+    expect(screenShareState.status).toBe(200)
+    expect(
+      screenShareState.body.participants.find((participant) => participant.userId === owner.user.id)?.screenSharing
+    ).toBe(true)
+
+    const memberJoinedVoice = await callGateway<VoiceSession>({
+      method: "POST",
+      path: `/v1/voice/channels/${voiceChannel.body.id}/join`,
+      token: member.token,
+      body: {}
+    })
+    expect(memberJoinedVoice.status).toBe(200)
+    expect(memberJoinedVoice.body.participants.some((participant) => participant.userId === member.user.id)).toBe(true)
+
+    const voiceRealtimeEvents = eventsOfType(memberVoiceEvents, "voice.session.updated")
+    expect(voiceRealtimeEvents.length).toBeGreaterThan(0)
+
+    const ownerLeftVoice = await callGateway<VoiceSession>({
+      method: "POST",
+      path: `/v1/voice/channels/${voiceChannel.body.id}/leave`,
+      token: owner.token,
+      body: {}
+    })
+    expect(ownerLeftVoice.status).toBe(200)
+    expect(ownerLeftVoice.body.participants.some((participant) => participant.userId === owner.user.id)).toBe(false)
+
+    const directThread = await callGateway<DirectThread>({
+      method: "POST",
+      path: "/v1/direct-threads",
+      token: owner.token,
+      body: {
+        participantIds: [member.user.id]
+      }
+    })
+    expect(directThread.status).toBe(201)
+
+    const joinedCall = await callGateway<VoiceSession>({
+      method: "POST",
+      path: `/v1/voice/direct-threads/${directThread.body.id}/join`,
+      token: owner.token,
+      body: {
+        speaking: false
+      }
+    })
+    expect(joinedCall.status).toBe(200)
+    expect(joinedCall.body.targetKind).toBe("direct_thread")
+    expect(joinedCall.body.targetId).toBe(directThread.body.id)
+
+    const heartbeat = await callGateway<VoiceSession>({
+      method: "POST",
+      path: `/v1/voice/direct-threads/${directThread.body.id}/heartbeat`,
+      token: owner.token,
+      body: {
+        speaking: true
+      }
+    })
+    expect(heartbeat.status).toBe(200)
+    expect(heartbeat.body.participants.find((participant) => participant.userId === owner.user.id)?.speaking).toBe(true)
+
+    const leftCall = await callGateway<VoiceSession>({
+      method: "POST",
+      path: `/v1/voice/direct-threads/${directThread.body.id}/leave`,
+      token: owner.token,
+      body: {}
+    })
+    expect(leftCall.status).toBe(200)
+    expect(leftCall.body.participants.some((participant) => participant.userId === owner.user.id)).toBe(false)
+
+    expect(serviceHits.voice).toBeGreaterThan(hitsBeforeVoice)
   })
 
   it("supports push subscription CRUD via gateway", async () => {

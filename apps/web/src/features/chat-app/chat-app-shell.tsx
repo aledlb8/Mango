@@ -42,13 +42,25 @@ export function ChatAppShell(props: ChatAppShellProps) {
     }
 
     if (routeKind === "server" && routeServerId && app.selectedServerId === routeServerId) {
-      if (app.selectedChannelId) {
+      const routeChannelExists =
+        routeChannelId !== null && app.channels.some((channel) => channel.id === routeChannelId)
+
+      if (routeChannelId === null && app.selectedChannelId) {
         const target = serverChannelPath(routeServerId, app.selectedChannelId)
         if (pathname !== target && pendingNormalizePathRef.current !== target) {
           pendingNormalizePathRef.current = target
           router.replace(target)
         }
-      } else if (routeChannelId) {
+      } else if (routeChannelId && app.channels.length > 0 && !routeChannelExists) {
+        if (app.selectedChannelId) {
+          const target = serverChannelPath(routeServerId, app.selectedChannelId)
+          if (pathname !== target && pendingNormalizePathRef.current !== target) {
+            pendingNormalizePathRef.current = target
+            router.replace(target)
+          }
+          return
+        }
+
         const target = serverPath(routeServerId)
         if (pathname !== target && pendingNormalizePathRef.current !== target) {
           pendingNormalizePathRef.current = target
@@ -59,13 +71,8 @@ export function ChatAppShell(props: ChatAppShellProps) {
     }
 
     if (routeKind === "dm" && routeThreadId) {
-      if (app.selectedDirectThreadId && routeThreadId !== app.selectedDirectThreadId) {
-        const target = dmPath(app.selectedDirectThreadId)
-        if (pathname !== target && pendingNormalizePathRef.current !== target) {
-          pendingNormalizePathRef.current = target
-          router.replace(target)
-        }
-      } else if (!app.selectedDirectThreadId) {
+      const routeThreadExists = app.directThreads.some((thread) => thread.id === routeThreadId)
+      if (app.directThreads.length > 0 && !routeThreadExists) {
         const target = friendsPath()
         if (pathname !== target && pendingNormalizePathRef.current !== target) {
           pendingNormalizePathRef.current = target
@@ -79,6 +86,8 @@ export function ChatAppShell(props: ChatAppShellProps) {
     app.selectedServerId,
     app.selectedChannelId,
     app.selectedDirectThreadId,
+    app.channels,
+    app.directThreads,
     routeKind,
     routeServerId,
     routeChannelId,
@@ -202,16 +211,28 @@ export function ChatAppShell(props: ChatAppShellProps) {
         directThreads={app.directThreads}
         busyKey={app.busyKey}
         channelName={app.channelName}
+        channelType={app.channelType}
         latestInviteCode={app.latestInviteCode}
         pendingRequestCount={app.pendingRequestCount}
+        activeVoiceInfo={app.activeVoiceInfo}
+        connectedVoiceSession={app.connectedVoiceSession}
+        voiceConnectionStatus={app.voiceConnectionStatus}
+        voiceMuted={app.voiceMuted}
+        voiceDeafened={app.voiceDeafened}
+        voiceSessionsByTarget={app.voiceSessionsByTarget}
         setChannelName={app.setChannelName}
+        setChannelType={app.setChannelType}
         onSelectChannel={handleSelectChannel}
         onSelectDirectThread={handleSelectDirectThread}
         onSelectFriendsView={handleSelectFriendsView}
         onCreateChannel={app.handleCreateChannel}
         onCreateInvite={app.handleCreateInvite}
+        onLeaveVoice={app.handleLeaveVoice}
+        onToggleVoiceMute={app.handleToggleVoiceMute}
+        onToggleVoiceDeafen={app.handleToggleVoiceDeafen}
         getDirectThreadLabel={app.getDirectThreadLabel}
         getDirectThreadAvatar={app.getDirectThreadAvatar}
+        getUserLabel={app.getUserLabel}
         onSignOut={app.handleSignOut}
         onEditChannel={app.handleEditChannel}
         onDeleteChannel={app.handleDeleteChannel}
@@ -247,6 +268,14 @@ export function ChatAppShell(props: ChatAppShellProps) {
           typingUserLabels={app.typingUserLabels}
           busyKey={app.busyKey}
           realtimeStatus={app.realtimeStatus}
+          voiceSession={app.activeVoiceSession}
+          activeVoiceInfo={app.activeVoiceInfo}
+          voiceConnectionStatus={app.voiceConnectionStatus}
+          voiceMuted={app.voiceMuted}
+          voiceDeafened={app.voiceDeafened}
+          voiceSpeaking={app.voiceSpeaking}
+          voiceScreenSharing={app.voiceScreenSharing}
+          screenShareAvailable={app.screenShareAvailable}
           setMessageBody={app.setMessageBody}
           onPickAttachments={app.handlePickAttachments}
           onRemovePendingAttachment={app.handleRemovePendingAttachment}
@@ -255,7 +284,14 @@ export function ChatAppShell(props: ChatAppShellProps) {
           onDeleteMessage={app.handleDeleteMessage}
           onAddReaction={app.handleAddReaction}
           onRemoveReaction={app.handleRemoveReaction}
+          onJoinVoice={app.handleJoinVoice}
+          onLeaveVoice={app.handleLeaveVoice}
+          onToggleVoiceMute={app.handleToggleVoiceMute}
+          onToggleVoiceDeafen={app.handleToggleVoiceDeafen}
+          onToggleVoiceSpeaking={app.handleToggleVoiceSpeaking}
+          onToggleVoiceScreenShare={app.handleToggleVoiceScreenShare}
           getAuthorLabel={app.getAuthorLabel}
+          getUserLabel={app.getUserLabel}
           copyToClipboard={app.copyToClipboard}
         />
       )}

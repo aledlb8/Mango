@@ -33,7 +33,12 @@ export async function handleCreateChannel(
     return error(ctx.corsOrigin, 400, "Channel name must be at least 2 characters.")
   }
 
-  const channel: Channel = await ctx.store.createChannel(serverId, name)
+  const type = body.type ?? "text"
+  if (type !== "text" && type !== "voice") {
+    return error(ctx.corsOrigin, 400, "Channel type must be one of: text, voice.")
+  }
+
+  const channel: Channel = await ctx.store.createChannel(serverId, name, type)
 
   return json(ctx.corsOrigin, 201, channel)
 }

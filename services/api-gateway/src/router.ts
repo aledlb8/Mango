@@ -17,7 +17,8 @@ import {
   preferIdentityServiceProxy,
   preferMediaServiceProxy,
   preferMessagingServiceProxy,
-  preferPresenceServiceProxy
+  preferPresenceServiceProxy,
+  preferVoiceSignalingProxy
 } from "./config"
 import { handleGetMe, handleLogin, handleRegister } from "./handlers/auth"
 import {
@@ -80,6 +81,20 @@ import {
 } from "./handlers/servers"
 import { handleSearch } from "./handlers/search"
 import { handleChannelTyping, handleDirectThreadTyping } from "./handlers/typing"
+import {
+  handleDirectThreadCallHeartbeat,
+  handleDirectThreadCallScreenShare,
+  handleGetDirectThreadCallSession,
+  handleGetVoiceChannelSession,
+  handleJoinDirectThreadCall,
+  handleJoinVoiceChannel,
+  handleLeaveDirectThreadCall,
+  handleLeaveVoiceChannel,
+  handleUpdateDirectThreadCallState,
+  handleUpdateVoiceChannelState,
+  handleVoiceChannelHeartbeat,
+  handleVoiceChannelScreenShare
+} from "./handlers/voice"
 import { corsHeaders, error, json } from "./http/response"
 import { checkRateLimit } from "./rate-limit"
 import type { RouteContext } from "./router-context"
@@ -103,6 +118,18 @@ const channelReadMarkerRoute = /^\/v1\/channels\/([^/]+)\/read-marker$/
 const channelTypingRoute = /^\/v1\/channels\/([^/]+)\/typing$/
 const channelOverwritesRoute = /^\/v1\/channels\/([^/]+)\/overwrites$/
 const channelRoute = /^\/v1\/channels\/([^/]+)$/
+const voiceChannelSessionRoute = /^\/v1\/voice\/channels\/([^/]+)$/
+const voiceChannelJoinRoute = /^\/v1\/voice\/channels\/([^/]+)\/join$/
+const voiceChannelLeaveRoute = /^\/v1\/voice\/channels\/([^/]+)\/leave$/
+const voiceChannelStateRoute = /^\/v1\/voice\/channels\/([^/]+)\/state$/
+const voiceChannelHeartbeatRoute = /^\/v1\/voice\/channels\/([^/]+)\/heartbeat$/
+const voiceChannelScreenShareRoute = /^\/v1\/voice\/channels\/([^/]+)\/screen-share$/
+const voiceDirectThreadSessionRoute = /^\/v1\/voice\/direct-threads\/([^/]+)$/
+const voiceDirectThreadJoinRoute = /^\/v1\/voice\/direct-threads\/([^/]+)\/join$/
+const voiceDirectThreadLeaveRoute = /^\/v1\/voice\/direct-threads\/([^/]+)\/leave$/
+const voiceDirectThreadStateRoute = /^\/v1\/voice\/direct-threads\/([^/]+)\/state$/
+const voiceDirectThreadHeartbeatRoute = /^\/v1\/voice\/direct-threads\/([^/]+)\/heartbeat$/
+const voiceDirectThreadScreenShareRoute = /^\/v1\/voice\/direct-threads\/([^/]+)\/screen-share$/
 const messageRoute = /^\/v1\/messages\/([^/]+)$/
 const messageReactionsRoute = /^\/v1\/messages\/([^/]+)\/reactions$/
 const messageReactionRoute = /^\/v1\/messages\/([^/]+)\/reactions\/([^/]+)$/
@@ -145,6 +172,10 @@ function shouldProxyMedia(_ctx: RouteContext): boolean {
 
 function shouldProxyPresence(_ctx: RouteContext): boolean {
   return preferPresenceServiceProxy
+}
+
+function shouldProxyVoiceSignaling(_ctx: RouteContext): boolean {
+  return preferVoiceSignalingProxy
 }
 
 async function proxyToService(
@@ -803,6 +834,102 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
     return await handleChannelTyping(request, channelTypingMatch[1], ctx)
   }
 
+  const voiceChannelSessionMatch = pathname.match(voiceChannelSessionRoute)
+  if (voiceChannelSessionMatch?.[1] && request.method === "GET") {
+    if (!shouldProxyVoiceSignaling(ctx)) {
+      return error(ctx.corsOrigin, 503, "Voice signaling service unavailable.")
+    }
+    return await handleGetVoiceChannelSession(request, voiceChannelSessionMatch[1], ctx)
+  }
+
+  const voiceChannelJoinMatch = pathname.match(voiceChannelJoinRoute)
+  if (voiceChannelJoinMatch?.[1] && request.method === "POST") {
+    if (!shouldProxyVoiceSignaling(ctx)) {
+      return error(ctx.corsOrigin, 503, "Voice signaling service unavailable.")
+    }
+    return await handleJoinVoiceChannel(request, voiceChannelJoinMatch[1], ctx)
+  }
+
+  const voiceChannelLeaveMatch = pathname.match(voiceChannelLeaveRoute)
+  if (voiceChannelLeaveMatch?.[1] && request.method === "POST") {
+    if (!shouldProxyVoiceSignaling(ctx)) {
+      return error(ctx.corsOrigin, 503, "Voice signaling service unavailable.")
+    }
+    return await handleLeaveVoiceChannel(request, voiceChannelLeaveMatch[1], ctx)
+  }
+
+  const voiceChannelStateMatch = pathname.match(voiceChannelStateRoute)
+  if (voiceChannelStateMatch?.[1] && request.method === "POST") {
+    if (!shouldProxyVoiceSignaling(ctx)) {
+      return error(ctx.corsOrigin, 503, "Voice signaling service unavailable.")
+    }
+    return await handleUpdateVoiceChannelState(request, voiceChannelStateMatch[1], ctx)
+  }
+
+  const voiceChannelHeartbeatMatch = pathname.match(voiceChannelHeartbeatRoute)
+  if (voiceChannelHeartbeatMatch?.[1] && request.method === "POST") {
+    if (!shouldProxyVoiceSignaling(ctx)) {
+      return error(ctx.corsOrigin, 503, "Voice signaling service unavailable.")
+    }
+    return await handleVoiceChannelHeartbeat(request, voiceChannelHeartbeatMatch[1], ctx)
+  }
+
+  const voiceChannelScreenShareMatch = pathname.match(voiceChannelScreenShareRoute)
+  if (voiceChannelScreenShareMatch?.[1] && request.method === "POST") {
+    if (!shouldProxyVoiceSignaling(ctx)) {
+      return error(ctx.corsOrigin, 503, "Voice signaling service unavailable.")
+    }
+    return await handleVoiceChannelScreenShare(request, voiceChannelScreenShareMatch[1], ctx)
+  }
+
+  const voiceDirectThreadSessionMatch = pathname.match(voiceDirectThreadSessionRoute)
+  if (voiceDirectThreadSessionMatch?.[1] && request.method === "GET") {
+    if (!shouldProxyVoiceSignaling(ctx)) {
+      return error(ctx.corsOrigin, 503, "Voice signaling service unavailable.")
+    }
+    return await handleGetDirectThreadCallSession(request, voiceDirectThreadSessionMatch[1], ctx)
+  }
+
+  const voiceDirectThreadJoinMatch = pathname.match(voiceDirectThreadJoinRoute)
+  if (voiceDirectThreadJoinMatch?.[1] && request.method === "POST") {
+    if (!shouldProxyVoiceSignaling(ctx)) {
+      return error(ctx.corsOrigin, 503, "Voice signaling service unavailable.")
+    }
+    return await handleJoinDirectThreadCall(request, voiceDirectThreadJoinMatch[1], ctx)
+  }
+
+  const voiceDirectThreadLeaveMatch = pathname.match(voiceDirectThreadLeaveRoute)
+  if (voiceDirectThreadLeaveMatch?.[1] && request.method === "POST") {
+    if (!shouldProxyVoiceSignaling(ctx)) {
+      return error(ctx.corsOrigin, 503, "Voice signaling service unavailable.")
+    }
+    return await handleLeaveDirectThreadCall(request, voiceDirectThreadLeaveMatch[1], ctx)
+  }
+
+  const voiceDirectThreadStateMatch = pathname.match(voiceDirectThreadStateRoute)
+  if (voiceDirectThreadStateMatch?.[1] && request.method === "POST") {
+    if (!shouldProxyVoiceSignaling(ctx)) {
+      return error(ctx.corsOrigin, 503, "Voice signaling service unavailable.")
+    }
+    return await handleUpdateDirectThreadCallState(request, voiceDirectThreadStateMatch[1], ctx)
+  }
+
+  const voiceDirectThreadHeartbeatMatch = pathname.match(voiceDirectThreadHeartbeatRoute)
+  if (voiceDirectThreadHeartbeatMatch?.[1] && request.method === "POST") {
+    if (!shouldProxyVoiceSignaling(ctx)) {
+      return error(ctx.corsOrigin, 503, "Voice signaling service unavailable.")
+    }
+    return await handleDirectThreadCallHeartbeat(request, voiceDirectThreadHeartbeatMatch[1], ctx)
+  }
+
+  const voiceDirectThreadScreenShareMatch = pathname.match(voiceDirectThreadScreenShareRoute)
+  if (voiceDirectThreadScreenShareMatch?.[1] && request.method === "POST") {
+    if (!shouldProxyVoiceSignaling(ctx)) {
+      return error(ctx.corsOrigin, 503, "Voice signaling service unavailable.")
+    }
+    return await handleDirectThreadCallScreenShare(request, voiceDirectThreadScreenShareMatch[1], ctx)
+  }
+
   const channelMatch = pathname.match(channelRoute)
   if (channelMatch?.[1] && request.method === "PATCH") {
     if (shouldProxyCommunity(ctx)) {
@@ -953,6 +1080,18 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       "GET /v1/channels/:channelId/read-marker",
       "PUT /v1/channels/:channelId/read-marker",
       "POST /v1/channels/:channelId/typing",
+      "GET /v1/voice/channels/:channelId",
+      "POST /v1/voice/channels/:channelId/join",
+      "POST /v1/voice/channels/:channelId/leave",
+      "POST /v1/voice/channels/:channelId/state",
+      "POST /v1/voice/channels/:channelId/heartbeat",
+      "POST /v1/voice/channels/:channelId/screen-share",
+      "GET /v1/voice/direct-threads/:threadId",
+      "POST /v1/voice/direct-threads/:threadId/join",
+      "POST /v1/voice/direct-threads/:threadId/leave",
+      "POST /v1/voice/direct-threads/:threadId/state",
+      "POST /v1/voice/direct-threads/:threadId/heartbeat",
+      "POST /v1/voice/direct-threads/:threadId/screen-share",
       "PATCH /v1/channels/:channelId",
       "DELETE /v1/channels/:channelId",
       "PUT /v1/channels/:channelId/overwrites",

@@ -76,7 +76,7 @@ export interface AppStore {
   ): Promise<ModerationAction>
   listAuditLogs(serverId: string, limit: number): Promise<AuditLogEntry[]>
 
-  createChannel(serverId: string, name: string): Promise<Channel>
+  createChannel(serverId: string, name: string, type?: Channel["type"]): Promise<Channel>
   listChannels(serverId: string): Promise<Channel[]>
   listChannelsForUser(serverId: string, userId: string): Promise<Channel[]>
   getChannelById(channelId: string): Promise<Channel | null>

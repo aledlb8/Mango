@@ -55,10 +55,15 @@ Then open `http://localhost:3000`.
 - Web commands are intentionally delegated to `apps/web` via `pnpm --dir apps/web ...`.
 - Non-web TypeScript services are workspace packages managed by Bun.
 - LiveKit is included in local infra for voice signaling integration work.
+- LiveKit local media ports: UDP range `7882-7982` (configurable via `LIVEKIT_RTC_UDP_PORT_RANGE`), plus TCP `7881`.
+- LiveKit advertised media IP is configurable via `LIVEKIT_NODE_IP` (set to `127.0.0.1` for same-machine testing, or your LAN IP when clients are on other devices).
 - `api-gateway` delegates identity endpoints (`/v1/auth/*`, `/v1/me`, `/v1/users/*`, `/v1/friends`) to `identity-service` when `PREFER_IDENTITY_SERVICE_PROXY=true` (default).
 - `api-gateway` delegates community endpoints (`/v1/servers/*`, `/v1/channels/:channelId/overwrites`, `/v1/invites/:code/join`) to `community-service` when `PREFER_COMMUNITY_SERVICE_PROXY=true` (default).
 - `api-gateway` delegates messaging endpoints (`/v1/channels/:channelId/messages`, `/v1/messages/*`) to `messaging-service` when `PREFER_MESSAGING_SERVICE_PROXY=true` (default).
+- `api-gateway` delegates voice/call signaling endpoints (`/v1/voice/*`) to `voice-signaling` when `PREFER_VOICE_SIGNALING_PROXY=true` (default).
+- `voice-signaling` issues LiveKit participant JWTs using `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` (local defaults: `devkey` / `secret`).
 - realtime websocket fanout (`/v1/ws`) remains in `api-gateway`; when messaging is proxied, websocket events are published from proxied messaging responses.
+- screen-share controls are behind `ENABLE_SCREEN_SHARE=true` (gateway) and `VOICE_SIGNALING_ENABLE_SCREEN_SHARE=true` (voice signaling).
 - API gateway store modes:
 - `STORE_MODE=postgres` (default): uses Postgres + runs SQL migrations at startup
 - `STORE_MODE=memory`: in-memory fallback mode

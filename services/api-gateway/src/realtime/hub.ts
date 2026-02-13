@@ -4,7 +4,8 @@ import type {
   MessageDeletedEvent,
   PresenceState,
   MessageReactionSummary,
-  TypingIndicator
+  TypingIndicator,
+  VoiceSession
 } from "@mango/contracts"
 import type { ServerWebSocket } from "bun"
 
@@ -208,5 +209,21 @@ export class RealtimeHub {
     for (const socket of targets) {
       socket.send(encoded)
     }
+  }
+
+  publishVoiceSessionUpdated(session: VoiceSession, serverMemberIds: string[] = []): void {
+    const recipientIds = [
+      ...session.participants.map((participant) => participant.userId),
+      ...serverMemberIds
+    ]
+
+    this.publishToTargets(
+      session.targetId,
+      {
+        type: "voice.session.updated",
+        payload: session
+      },
+      recipientIds
+    )
   }
 }

@@ -68,7 +68,7 @@ type ChannelRow = {
   id: string
   server_id: string
   name: string
-  channel_type: "text"
+  channel_type: "text" | "voice"
   is_direct_thread_backing?: boolean
   created_at: string | Date
 }
@@ -1312,18 +1312,18 @@ export class PostgresStore implements AppStore {
     return true
   }
 
-  async createChannel(serverId: string, name: string): Promise<Channel> {
+  async createChannel(serverId: string, name: string, type: Channel["type"] = "text"): Promise<Channel> {
     const id = createId("chn")
     const createdAt = new Date().toISOString()
     await this.sql`
       INSERT INTO channels (id, server_id, name, channel_type, is_direct_thread_backing, created_at)
-      VALUES (${id}, ${serverId}, ${name}, 'text', FALSE, ${createdAt})
+      VALUES (${id}, ${serverId}, ${name}, ${type}, FALSE, ${createdAt})
     `
     return {
       id,
       serverId,
       name,
-      type: "text",
+      type,
       createdAt
     }
   }

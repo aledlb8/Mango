@@ -41,6 +41,10 @@ export async function handleChannelTyping(
     return error(ctx.corsOrigin, 404, "Channel not found.")
   }
 
+  if (channel.type !== "text") {
+    return error(ctx.corsOrigin, 400, "Voice channels do not support typing indicators.")
+  }
+
   if (!(await ctx.store.hasChannelPermission(channel.id, user.id, "send_messages"))) {
     return error(ctx.corsOrigin, 403, "Missing permission: send_messages.")
   }

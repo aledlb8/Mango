@@ -782,12 +782,12 @@ export class MemoryStore implements AppStore {
     return logs.slice(0, Math.max(1, limit)).map((entry) => ({ ...entry, metadata: { ...entry.metadata } }))
   }
 
-  async createChannel(serverId: string, name: string): Promise<Channel> {
+  async createChannel(serverId: string, name: string, type: Channel["type"] = "text"): Promise<Channel> {
     const channel: Channel = {
       id: createId("chn"),
       serverId,
       name,
-      type: "text",
+      type,
       createdAt: new Date().toISOString()
     }
     this.state.channelsById.set(channel.id, channel)

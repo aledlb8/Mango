@@ -64,11 +64,13 @@ export type ServerInvite = {
   uses: number
 }
 
+export type ChannelType = "text" | "voice"
+
 export type Channel = {
   id: string
   serverId: string
   name: string
-  type: "text"
+  type: ChannelType
   createdAt: string
 }
 
@@ -145,6 +147,39 @@ export type TypingIndicator = {
   userId: string
   isTyping: boolean
   expiresAt: string
+}
+
+export type VoiceTargetKind = "channel" | "direct_thread"
+
+export type VoiceParticipantState = {
+  userId: string
+  muted: boolean
+  deafened: boolean
+  speaking: boolean
+  screenSharing: boolean
+  joinedAt: string
+  lastSeenAt: string
+}
+
+export type VoiceFeatureFlags = {
+  screenShare: boolean
+}
+
+export type VoiceSession = {
+  id: string
+  targetKind: VoiceTargetKind
+  targetId: string
+  serverId: string | null
+  startedAt: string
+  updatedAt: string
+  reconnectGraceMs: number
+  features: VoiceFeatureFlags
+  participants: VoiceParticipantState[]
+  signaling: {
+    url: string
+    roomName: string
+    participantToken: string
+  }
 }
 
 export type PresenceStatus = "online" | "idle" | "dnd" | "offline"
@@ -359,7 +394,11 @@ export function listChannels(token: string, serverId: string) {
   return request<Channel[]>(`/v1/servers/${serverId}/channels`, { token })
 }
 
-export function createChannel(token: string, serverId: string, payload: { name: string }) {
+export function createChannel(
+  token: string,
+  serverId: string,
+  payload: { name: string; type?: ChannelType }
+) {
   return request<Channel>(`/v1/servers/${serverId}/channels`, {
     method: "POST",
     token,
@@ -482,6 +521,126 @@ export function sendDirectThreadTyping(
   payload: { isTyping?: boolean } = {}
 ) {
   return request<TypingIndicator>(`/v1/direct-threads/${encodeURIComponent(threadId)}/typing`, {
+    method: "POST",
+    token,
+    body: payload
+  })
+}
+
+export function getVoiceChannelSession(token: string, channelId: string) {
+  return request<VoiceSession | null>(`/v1/voice/channels/${encodeURIComponent(channelId)}`, { token })
+}
+
+export function joinVoiceChannel(
+  token: string,
+  channelId: string,
+  payload: { muted?: boolean; deafened?: boolean; speaking?: boolean } = {}
+) {
+  return request<VoiceSession>(`/v1/voice/channels/${encodeURIComponent(channelId)}/join`, {
+    method: "POST",
+    token,
+    body: payload
+  })
+}
+
+export function leaveVoiceChannel(token: string, channelId: string) {
+  return request<VoiceSession>(`/v1/voice/channels/${encodeURIComponent(channelId)}/leave`, {
+    method: "POST",
+    token,
+    body: {}
+  })
+}
+
+export function updateVoiceChannelState(
+  token: string,
+  channelId: string,
+  payload: { muted?: boolean; deafened?: boolean; speaking?: boolean }
+) {
+  return request<VoiceSession>(`/v1/voice/channels/${encodeURIComponent(channelId)}/state`, {
+    method: "POST",
+    token,
+    body: payload
+  })
+}
+
+export function heartbeatVoiceChannel(
+  token: string,
+  channelId: string,
+  payload: { speaking?: boolean } = {}
+) {
+  return request<VoiceSession>(`/v1/voice/channels/${encodeURIComponent(channelId)}/heartbeat`, {
+    method: "POST",
+    token,
+    body: payload
+  })
+}
+
+export function updateVoiceChannelScreenShare(
+  token: string,
+  channelId: string,
+  payload: { screenSharing: boolean }
+) {
+  return request<VoiceSession>(`/v1/voice/channels/${encodeURIComponent(channelId)}/screen-share`, {
+    method: "POST",
+    token,
+    body: payload
+  })
+}
+
+export function getDirectThreadCallSession(token: string, threadId: string) {
+  return request<VoiceSession | null>(`/v1/voice/direct-threads/${encodeURIComponent(threadId)}`, { token })
+}
+
+export function joinDirectThreadCall(
+  token: string,
+  threadId: string,
+  payload: { muted?: boolean; deafened?: boolean; speaking?: boolean } = {}
+) {
+  return request<VoiceSession>(`/v1/voice/direct-threads/${encodeURIComponent(threadId)}/join`, {
+    method: "POST",
+    token,
+    body: payload
+  })
+}
+
+export function leaveDirectThreadCall(token: string, threadId: string) {
+  return request<VoiceSession>(`/v1/voice/direct-threads/${encodeURIComponent(threadId)}/leave`, {
+    method: "POST",
+    token,
+    body: {}
+  })
+}
+
+export function updateDirectThreadCallState(
+  token: string,
+  threadId: string,
+  payload: { muted?: boolean; deafened?: boolean; speaking?: boolean }
+) {
+  return request<VoiceSession>(`/v1/voice/direct-threads/${encodeURIComponent(threadId)}/state`, {
+    method: "POST",
+    token,
+    body: payload
+  })
+}
+
+export function heartbeatDirectThreadCall(
+  token: string,
+  threadId: string,
+  payload: { speaking?: boolean } = {}
+) {
+  return request<VoiceSession>(`/v1/voice/direct-threads/${encodeURIComponent(threadId)}/heartbeat`, {
+    method: "POST",
+    token,
+    body: payload
+  })
+}
+
+export function updateDirectThreadCallScreenShare(
+  token: string,
+  threadId: string,
+  payload: { screenSharing: boolean }
+) {
+  return request<VoiceSession>(`/v1/voice/direct-threads/${encodeURIComponent(threadId)}/screen-share`, {
     method: "POST",
     token,
     body: payload

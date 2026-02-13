@@ -14,3 +14,6 @@ export const mediaServiceUrl = process.env.MEDIA_SERVICE_URL ?? "http://localhos
 export const preferMediaServiceProxy = process.env.PREFER_MEDIA_SERVICE_PROXY !== "false"
 export const presenceServiceUrl = process.env.PRESENCE_SERVICE_URL ?? "http://localhost:4002"
 export const preferPresenceServiceProxy = process.env.PREFER_PRESENCE_SERVICE_PROXY !== "false"
+export const voiceSignalingServiceUrl = process.env.VOICE_SIGNALING_SERVICE_URL ?? "http://localhost:4003"
+export const preferVoiceSignalingProxy = process.env.PREFER_VOICE_SIGNALING_PROXY !== "false"
+export const enableScreenShare = process.env.ENABLE_SCREEN_SHARE === "true"

@@ -21,6 +21,10 @@ export async function handleCreateMessage(
     return error(ctx.corsOrigin, 404, "Channel not found.")
   }
 
+  if (channel.type !== "text") {
+    return error(ctx.corsOrigin, 400, "Voice channels do not support text messages.")
+  }
+
   if (!(await ctx.store.hasChannelPermission(channel.id, user.id, "send_messages"))) {
     return error(ctx.corsOrigin, 403, "Missing permission: send_messages.")
   }
@@ -60,6 +64,10 @@ export async function handleListMessages(
   const channel = await ctx.store.getChannelById(channelId)
   if (!channel) {
     return error(ctx.corsOrigin, 404, "Channel not found.")
+  }
+
+  if (channel.type !== "text") {
+    return error(ctx.corsOrigin, 400, "Voice channels do not have message history.")
   }
 
   if (!(await ctx.store.hasChannelPermission(channel.id, user.id, "read_messages"))) {

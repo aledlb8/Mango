@@ -78,11 +78,13 @@ export type Server = {
   createdAt: string;
 };
 
+export type ChannelType = "text" | "voice";
+
 export type Channel = {
   id: string;
   serverId: string;
   name: string;
-  type: "text";
+  type: ChannelType;
   createdAt: string;
 };
 
@@ -174,6 +176,59 @@ export type TypingIndicator = {
   expiresAt: string;
 };
 
+export type VoiceTargetKind = "channel" | "direct_thread";
+
+export type VoiceParticipantState = {
+  userId: string;
+  muted: boolean;
+  deafened: boolean;
+  speaking: boolean;
+  screenSharing: boolean;
+  joinedAt: string;
+  lastSeenAt: string;
+};
+
+export type VoiceFeatureFlags = {
+  screenShare: boolean;
+};
+
+export type VoiceSession = {
+  id: string;
+  targetKind: VoiceTargetKind;
+  targetId: string;
+  serverId: string | null;
+  startedAt: string;
+  updatedAt: string;
+  reconnectGraceMs: number;
+  features: VoiceFeatureFlags;
+  participants: VoiceParticipantState[];
+  signaling: {
+    url: string;
+    roomName: string;
+    participantToken: string;
+  };
+};
+
+export type JoinVoiceRequest = {
+  muted?: boolean;
+  deafened?: boolean;
+  speaking?: boolean;
+};
+
+export type UpdateVoiceStateRequest = {
+  muted?: boolean;
+  deafened?: boolean;
+  speaking?: boolean;
+};
+
+export type UpdateVoiceScreenShareRequest = {
+  screenSharing: boolean;
+};
+
+export type VoiceHeartbeatRequest = {
+  speaking?: boolean;
+};
+
 export type PresenceStatus = "online" | "idle" | "dnd" | "offline";
 
 export type PresenceState = {
@@ -255,6 +310,7 @@ export type CreateServerRequest = {
 
 export type CreateChannelRequest = {
   name: string;
+  type?: ChannelType;
 };
 
 export type UpdateChannelRequest = {
@@ -378,6 +434,10 @@ export type RealtimeServerMessage =
   | {
       type: "presence.updated";
       payload: PresenceState;
+    }
+  | {
+      type: "voice.session.updated";
+      payload: VoiceSession;
     }
   | {
       type: "pong";

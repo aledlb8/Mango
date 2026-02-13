@@ -1,6 +1,7 @@
 import {
   communityServiceUrl,
   corsOrigin,
+  enableScreenShare,
   identityServiceUrl,
   mediaServiceUrl,
   messagingServiceUrl,
@@ -10,7 +11,9 @@ import {
   preferMediaServiceProxy,
   preferPresenceServiceProxy,
   preferMessagingServiceProxy,
+  preferVoiceSignalingProxy,
   presenceServiceUrl,
+  voiceSignalingServiceUrl,
   service
 } from "./config"
 import { createStore } from "./data/store-factory"
@@ -62,3 +65,7 @@ if (preferMediaServiceProxy) {
 if (preferPresenceServiceProxy) {
   console.log(`${service} presence proxy enabled -> ${presenceServiceUrl}`)
 }
+if (preferVoiceSignalingProxy) {
+  console.log(`${service} voice-signaling proxy enabled -> ${voiceSignalingServiceUrl}`)
+}
+console.log(`${service} screen-share feature flag: ${enableScreenShare ? "enabled" : "disabled"}`)
