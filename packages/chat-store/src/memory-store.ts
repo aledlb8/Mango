@@ -1,9 +1,13 @@
 import type {
+  AdminAnalyticsOverview,
   AuditLogEntry,
   Attachment,
   Channel,
   ChannelPermissionOverwrite,
+  CreatedServerBot,
+  CreatedWebhook,
   DirectThread,
+  ForumThread,
   FriendRequest,
   Message,
   MessageDeletedEvent,
@@ -14,30 +18,64 @@ import type {
   PushSubscription,
   ReadMarker,
   Role,
+  SafetyAppeal,
+  SafetyAppealStatus,
+  SafetyReport,
+  SafetyReportStatus,
+  SafetyReportTargetType,
   SearchResults,
   SearchScope,
+  ServerBot,
   ServerInvite,
   Server,
-  User
+  User,
+  Webhook
 } from "@mango/contracts"
 import { createId } from "./id"
+import { createHash } from "node:crypto"
 import {
   DEFAULT_MEMBER_PERMISSIONS,
   OWNER_ROLE_PERMISSIONS,
   hasPermissionAfterOverwrites,
   sanitizePermissions
 } from "./permissions"
-import type { AppStore, StoredUser } from "./store"
+import type {
+  AppStore,
+  CreateForumThreadInput,
+  CreateSafetyReportInput,
+  ListSafetyAppealsOptions,
+  ListSafetyReportsOptions,
+  StoredUser,
+  UpdateForumThreadInput,
+  UpdateSafetyAppealInput,
+  UpdateSafetyReportInput
+} from "./store"
+
+type StoredForumThread = ForumThread
+
+type StoredWebhook = Webhook & {
+  tokenHash: string
+  senderUserId: string
+}
+
+type StoredBot = ServerBot & {
+  tokenHash: string
+}
 
 type MemoryState = {
   usersById: Map<string, StoredUser>
   usersByEmail: Map<string, StoredUser>
   usersByUsername: Map<string, StoredUser>
   sessionsByToken: Map<string, string>
+  systemUserIds: Set<string>
   directThreadsById: Map<string, DirectThread>
   directThreadIdsByUserId: Map<string, string[]>
   directThreadIdByChannelId: Map<string, string>
   dmThreadIdsByPairKey: Map<string, string>
+  forumThreadsById: Map<string, StoredForumThread>
+  forumThreadIdsByParentChannelId: Map<string, string[]>
+  forumThreadIdByThreadChannelId: Map<string, string>
+  forumThreadChannelIds: Set<string>
   serversById: Map<string, Server>
   hiddenServerIds: Set<string>
   membersByServerId: Map<string, Set<string>>
@@ -62,6 +100,14 @@ type MemoryState = {
   pushSubscriptionIdsByUserId: Map<string, string[]>
   notificationQueue: Array<{ id: string; userId: string; title: string; body: string; url: string | null; createdAt: string }>
   invitesByCode: Map<string, ServerInvite>
+  webhooksById: Map<string, StoredWebhook>
+  webhookIdsByChannelId: Map<string, string[]>
+  botsById: Map<string, StoredBot>
+  botIdsByServerId: Map<string, string[]>
+  botIdByTokenHash: Map<string, string>
+  safetyReportsById: Map<string, SafetyReport>
+  safetyAppealsById: Map<string, SafetyAppeal>
+  safetyAppealIdsByReportId: Map<string, string[]>
 }
 
 function createMemoryState(): MemoryState {
@@ -70,10 +116,15 @@ function createMemoryState(): MemoryState {
     usersByEmail: new Map<string, StoredUser>(),
     usersByUsername: new Map<string, StoredUser>(),
     sessionsByToken: new Map<string, string>(),
+    systemUserIds: new Set<string>(),
     directThreadsById: new Map<string, DirectThread>(),
     directThreadIdsByUserId: new Map<string, string[]>(),
     directThreadIdByChannelId: new Map<string, string>(),
     dmThreadIdsByPairKey: new Map<string, string>(),
+    forumThreadsById: new Map<string, StoredForumThread>(),
+    forumThreadIdsByParentChannelId: new Map<string, string[]>(),
+    forumThreadIdByThreadChannelId: new Map<string, string>(),
+    forumThreadChannelIds: new Set<string>(),
     serversById: new Map<string, Server>(),
     hiddenServerIds: new Set<string>(),
     membersByServerId: new Map<string, Set<string>>(),
@@ -97,7 +148,15 @@ function createMemoryState(): MemoryState {
     pushSubscriptionsById: new Map<string, PushSubscription>(),
     pushSubscriptionIdsByUserId: new Map<string, string[]>(),
     notificationQueue: [],
-    invitesByCode: new Map<string, ServerInvite>()
+    invitesByCode: new Map<string, ServerInvite>(),
+    webhooksById: new Map<string, StoredWebhook>(),
+    webhookIdsByChannelId: new Map<string, string[]>(),
+    botsById: new Map<string, StoredBot>(),
+    botIdsByServerId: new Map<string, string[]>(),
+    botIdByTokenHash: new Map<string, string>(),
+    safetyReportsById: new Map<string, SafetyReport>(),
+    safetyAppealsById: new Map<string, SafetyAppeal>(),
+    safetyAppealIdsByReportId: new Map<string, string[]>()
   }
 }
 
@@ -134,6 +193,53 @@ function cloneDirectThread(thread: DirectThread): DirectThread {
     ...thread,
     participantIds: [...thread.participantIds]
   }
+}
+
+function cloneForumThread(thread: ForumThread): ForumThread {
+  return {
+    ...thread,
+    tags: [...thread.tags]
+  }
+}
+
+function cloneWebhook(webhook: Webhook): Webhook {
+  return {
+    ...webhook
+  }
+}
+
+function cloneBot(bot: ServerBot): ServerBot {
+  return {
+    ...bot
+  }
+}
+
+function cloneSafetyReport(report: SafetyReport): SafetyReport {
+  return {
+    ...report
+  }
+}
+
+function cloneSafetyAppeal(appeal: SafetyAppeal): SafetyAppeal {
+  return {
+    ...appeal
+  }
+}
+
+function normalizeThreadTags(tags: string[]): string[] {
+  return Array.from(
+    new Set(
+      tags.map((tag) => tag.trim().toLowerCase()).filter((tag) => tag.length > 0 && tag.length <= 32)
+    )
+  ).slice(0, 10)
+}
+
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex")
+}
+
+function tokenHint(token: string): string {
+  return token.slice(0, 8)
 }
 
 function generateInviteCode(): string {
@@ -203,6 +309,7 @@ export class MemoryStore implements AppStore {
 
     return Array.from(this.state.usersById.values())
       .filter((user) => user.id !== excludeUserId)
+      .filter((user) => !this.state.systemUserIds.has(user.id))
       .filter((user) => {
         return (
           user.username.toLowerCase().includes(normalized) ||
@@ -527,6 +634,108 @@ export class MemoryStore implements AppStore {
     return true
   }
 
+  async createForumThread(input: CreateForumThreadInput): Promise<{ thread: ForumThread; starterMessage: Message }> {
+    const parentChannel = this.state.channelsById.get(input.parentChannelId)
+    if (!parentChannel) {
+      throw new Error("Parent channel not found.")
+    }
+
+    const createdAt = new Date().toISOString()
+    const threadChannel: Channel = {
+      id: createId("chn"),
+      serverId: parentChannel.serverId,
+      name: input.title.trim() || "thread",
+      type: "text",
+      createdAt
+    }
+
+    this.state.channelsById.set(threadChannel.id, threadChannel)
+    const channelIds = this.state.channelIdsByServerId.get(parentChannel.serverId) ?? []
+    channelIds.push(threadChannel.id)
+    this.state.channelIdsByServerId.set(parentChannel.serverId, channelIds)
+    this.state.messageIdsByChannelId.set(threadChannel.id, [])
+    this.state.overwritesByChannelId.set(threadChannel.id, [])
+
+    const thread: ForumThread = {
+      id: createId("fth"),
+      serverId: parentChannel.serverId,
+      parentChannelId: input.parentChannelId,
+      threadChannelId: threadChannel.id,
+      title: input.title.trim() || "Untitled thread",
+      ownerId: input.ownerId,
+      tags: normalizeThreadTags(input.tags),
+      status: "open",
+      createdAt,
+      updatedAt: createdAt,
+      lastMessageAt: null
+    }
+
+    this.state.forumThreadsById.set(thread.id, thread)
+    const threadIds = this.state.forumThreadIdsByParentChannelId.get(thread.parentChannelId) ?? []
+    threadIds.push(thread.id)
+    this.state.forumThreadIdsByParentChannelId.set(thread.parentChannelId, threadIds)
+    this.state.forumThreadIdByThreadChannelId.set(thread.threadChannelId, thread.id)
+    this.state.forumThreadChannelIds.add(thread.threadChannelId)
+
+    const starterMessage = await this.createMessage(
+      thread.threadChannelId,
+      input.ownerId,
+      input.body,
+      input.attachments
+    )
+    return {
+      thread: cloneForumThread(this.state.forumThreadsById.get(thread.id) ?? thread),
+      starterMessage
+    }
+  }
+
+  async listForumThreads(parentChannelId: string, includeArchived: boolean): Promise<ForumThread[]> {
+    const threadIds = this.state.forumThreadIdsByParentChannelId.get(parentChannelId) ?? []
+    const threads = threadIds
+      .map((threadId) => this.state.forumThreadsById.get(threadId))
+      .filter((thread): thread is ForumThread => !!thread)
+      .filter((thread) => includeArchived || thread.status !== "archived")
+
+    return threads
+      .sort((a, b) => {
+        const aLast = a.lastMessageAt ?? a.createdAt
+        const bLast = b.lastMessageAt ?? b.createdAt
+        return bLast.localeCompare(aLast)
+      })
+      .map(cloneForumThread)
+  }
+
+  async getForumThreadById(threadId: string): Promise<ForumThread | null> {
+    const thread = this.state.forumThreadsById.get(threadId)
+    return thread ? cloneForumThread(thread) : null
+  }
+
+  async updateForumThread(threadId: string, input: UpdateForumThreadInput): Promise<ForumThread | null> {
+    const thread = this.state.forumThreadsById.get(threadId)
+    if (!thread) {
+      return null
+    }
+
+    if (input.title !== null) {
+      const normalized = input.title.trim()
+      if (normalized) {
+        thread.title = normalized
+      }
+    }
+
+    if (input.tags !== null) {
+      thread.tags = normalizeThreadTags(input.tags)
+    }
+
+    if (input.status !== null) {
+      thread.status = input.status
+    }
+
+    thread.updatedAt = new Date().toISOString()
+    this.state.forumThreadsById.set(thread.id, thread)
+    return cloneForumThread(thread)
+  }
+
   async createServer(name: string, ownerId: string): Promise<Server> {
     const server: Server = {
       id: createId("srv"),
@@ -801,7 +1010,10 @@ export class MemoryStore implements AppStore {
 
   async listChannels(serverId: string): Promise<Channel[]> {
     const ids = this.state.channelIdsByServerId.get(serverId) ?? []
-    return ids.map((id) => this.state.channelsById.get(id)).filter((channel): channel is Channel => !!channel)
+    return ids
+      .map((id) => this.state.channelsById.get(id))
+      .filter((channel): channel is Channel => !!channel)
+      .filter((channel) => !this.state.forumThreadChannelIds.has(channel.id))
   }
 
   async listChannelsForUser(serverId: string, userId: string): Promise<Channel[]> {
@@ -874,6 +1086,16 @@ export class MemoryStore implements AppStore {
       return false
     }
 
+    if (permission === "send_messages") {
+      const forumThreadId = this.state.forumThreadIdByThreadChannelId.get(channelId)
+      if (forumThreadId) {
+        const forumThread = this.state.forumThreadsById.get(forumThreadId)
+        if (forumThread?.status === "archived") {
+          return false
+        }
+      }
+    }
+
     if (permission === "send_messages" && (await this.isUserTimedOut(server.id, userId))) {
       return false
     }
@@ -883,6 +1105,7 @@ export class MemoryStore implements AppStore {
 
   async createMessage(channelId: string, authorId: string, body: string, attachments: Attachment[] = []): Promise<Message> {
     const directThreadId = this.state.directThreadIdByChannelId.get(channelId) ?? null
+    const createdAt = new Date().toISOString()
 
     const message: Message = {
       id: createId("msg"),
@@ -892,7 +1115,7 @@ export class MemoryStore implements AppStore {
       authorId,
       body,
       attachments: attachments.map(cloneAttachment),
-      createdAt: new Date().toISOString(),
+      createdAt,
       updatedAt: null,
       reactions: []
     }
@@ -901,6 +1124,17 @@ export class MemoryStore implements AppStore {
     const ids = this.state.messageIdsByChannelId.get(channelId) ?? []
     ids.push(message.id)
     this.state.messageIdsByChannelId.set(channelId, ids)
+
+    const forumThreadId = this.state.forumThreadIdByThreadChannelId.get(channelId)
+    if (forumThreadId) {
+      const thread = this.state.forumThreadsById.get(forumThreadId)
+      if (thread) {
+        thread.lastMessageAt = createdAt
+        thread.updatedAt = createdAt
+        this.state.forumThreadsById.set(thread.id, thread)
+      }
+    }
+
     return cloneMessage(message)
   }
 
@@ -1174,12 +1408,481 @@ export class MemoryStore implements AppStore {
     })
   }
 
+  async createWebhook(channelId: string, createdBy: string, name: string): Promise<CreatedWebhook> {
+    const channel = this.state.channelsById.get(channelId)
+    if (!channel) {
+      throw new Error("Channel not found.")
+    }
+
+    const sender = await this.createSystemUser("webhook", name)
+
+    const token = `whk_${crypto.randomUUID().replace(/-/g, "")}`
+    const createdAt = new Date().toISOString()
+
+    const webhook: StoredWebhook = {
+      id: createId("whk"),
+      serverId: channel.serverId,
+      channelId,
+      createdBy,
+      name: name.trim() || "Webhook",
+      tokenHint: tokenHint(token),
+      createdAt,
+      updatedAt: createdAt,
+      lastUsedAt: null,
+      disabledAt: null,
+      tokenHash: hashToken(token),
+      senderUserId: sender.id
+    }
+
+    this.state.webhooksById.set(webhook.id, webhook)
+    const ids = this.state.webhookIdsByChannelId.get(channelId) ?? []
+    ids.push(webhook.id)
+    this.state.webhookIdsByChannelId.set(channelId, ids)
+
+    return {
+      webhook: cloneWebhook(webhook),
+      token
+    }
+  }
+
+  async listWebhooks(channelId: string): Promise<Webhook[]> {
+    const ids = this.state.webhookIdsByChannelId.get(channelId) ?? []
+    return ids
+      .map((id) => this.state.webhooksById.get(id))
+      .filter((webhook): webhook is StoredWebhook => !!webhook)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map(cloneWebhook)
+  }
+
+  async deleteWebhook(webhookId: string): Promise<boolean> {
+    const webhook = this.state.webhooksById.get(webhookId)
+    if (!webhook) {
+      return false
+    }
+
+    this.removeWebhookInternal(webhookId)
+    return true
+  }
+
+  async executeWebhook(
+    webhookId: string,
+    token: string,
+    body: string,
+    attachments: Attachment[]
+  ): Promise<Message | null> {
+    const webhook = this.state.webhooksById.get(webhookId)
+    if (!webhook || webhook.disabledAt) {
+      return null
+    }
+
+    if (webhook.tokenHash !== hashToken(token)) {
+      return null
+    }
+
+    const now = new Date().toISOString()
+    webhook.lastUsedAt = now
+    webhook.updatedAt = now
+    this.state.webhooksById.set(webhook.id, webhook)
+
+    return await this.createMessage(webhook.channelId, webhook.senderUserId, body, attachments)
+  }
+
+  async createServerBot(serverId: string, createdBy: string, name: string): Promise<CreatedServerBot> {
+    if (!this.state.serversById.has(serverId)) {
+      throw new Error("Server not found.")
+    }
+
+    const sender = await this.createSystemUser("bot", name)
+    this.ensureServerMemberWithDefaultRole(serverId, sender.id)
+
+    const token = `bot_${crypto.randomUUID().replace(/-/g, "")}`
+    const createdAt = new Date().toISOString()
+    const bot: StoredBot = {
+      id: createId("bot"),
+      serverId,
+      userId: sender.id,
+      createdBy,
+      name: name.trim() || "Bot",
+      tokenHint: tokenHint(token),
+      createdAt,
+      updatedAt: createdAt,
+      lastUsedAt: null,
+      revokedAt: null,
+      tokenHash: hashToken(token)
+    }
+
+    this.state.botsById.set(bot.id, bot)
+    const ids = this.state.botIdsByServerId.get(serverId) ?? []
+    ids.push(bot.id)
+    this.state.botIdsByServerId.set(serverId, ids)
+    this.state.botIdByTokenHash.set(bot.tokenHash, bot.id)
+
+    return {
+      bot: cloneBot(bot),
+      token
+    }
+  }
+
+  async listServerBots(serverId: string): Promise<ServerBot[]> {
+    const ids = this.state.botIdsByServerId.get(serverId) ?? []
+    return ids
+      .map((id) => this.state.botsById.get(id))
+      .filter((bot): bot is StoredBot => !!bot)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map(cloneBot)
+  }
+
+  async revokeServerBot(serverId: string, botId: string): Promise<ServerBot | null> {
+    const bot = this.state.botsById.get(botId)
+    if (!bot || bot.serverId !== serverId) {
+      return null
+    }
+
+    bot.revokedAt = new Date().toISOString()
+    bot.updatedAt = bot.revokedAt
+    this.state.botsById.set(bot.id, bot)
+    this.state.botIdByTokenHash.delete(bot.tokenHash)
+
+    return cloneBot(bot)
+  }
+
+  async rotateServerBotToken(serverId: string, botId: string): Promise<CreatedServerBot | null> {
+    const bot = this.state.botsById.get(botId)
+    if (!bot || bot.serverId !== serverId || bot.revokedAt) {
+      return null
+    }
+
+    const token = `bot_${crypto.randomUUID().replace(/-/g, "")}`
+    const nextHash = hashToken(token)
+
+    this.state.botIdByTokenHash.delete(bot.tokenHash)
+    bot.tokenHash = nextHash
+    bot.tokenHint = tokenHint(token)
+    bot.updatedAt = new Date().toISOString()
+    this.state.botsById.set(bot.id, bot)
+    this.state.botIdByTokenHash.set(nextHash, bot.id)
+
+    return {
+      bot: cloneBot(bot),
+      token
+    }
+  }
+
+  async executeBotMessage(
+    token: string,
+    channelId: string,
+    body: string,
+    attachments: Attachment[]
+  ): Promise<Message | null> {
+    const botId = this.state.botIdByTokenHash.get(hashToken(token))
+    if (!botId) {
+      return null
+    }
+
+    const bot = this.state.botsById.get(botId)
+    if (!bot || bot.revokedAt) {
+      return null
+    }
+
+    const channel = this.state.channelsById.get(channelId)
+    if (!channel || channel.serverId !== bot.serverId) {
+      return null
+    }
+
+    if (!(await this.hasChannelPermission(channelId, bot.userId, "send_messages"))) {
+      return null
+    }
+
+    bot.lastUsedAt = new Date().toISOString()
+    bot.updatedAt = bot.lastUsedAt
+    this.state.botsById.set(bot.id, bot)
+
+    return await this.createMessage(channelId, bot.userId, body, attachments)
+  }
+
+  async createSafetyReport(input: CreateSafetyReportInput): Promise<SafetyReport> {
+    const now = new Date().toISOString()
+    const report: SafetyReport = {
+      id: createId("rpt"),
+      serverId: input.serverId,
+      reporterUserId: input.reporterUserId,
+      targetType: input.targetType,
+      targetId: input.targetId,
+      reasonCode: input.reasonCode,
+      details: input.details,
+      status: "open",
+      assignedModeratorId: null,
+      resolutionNote: null,
+      createdAt: now,
+      updatedAt: now,
+      resolvedAt: null
+    }
+
+    this.state.safetyReportsById.set(report.id, report)
+    return cloneSafetyReport(report)
+  }
+
+  async listSafetyReports(options: ListSafetyReportsOptions): Promise<SafetyReport[]> {
+    const max = Math.max(1, Math.min(options.limit, 200))
+    const reports = Array.from(this.state.safetyReportsById.values())
+      .filter((report) => (options.serverId ? report.serverId === options.serverId : true))
+      .filter((report) => (options.status ? report.status === options.status : true))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, max)
+
+    return reports.map(cloneSafetyReport)
+  }
+
+  async getSafetyReportById(reportId: string): Promise<SafetyReport | null> {
+    const report = this.state.safetyReportsById.get(reportId)
+    return report ? cloneSafetyReport(report) : null
+  }
+
+  async updateSafetyReport(reportId: string, input: UpdateSafetyReportInput): Promise<SafetyReport | null> {
+    const report = this.state.safetyReportsById.get(reportId)
+    if (!report) {
+      return null
+    }
+
+    report.status = input.status
+    report.assignedModeratorId = input.assignedModeratorId
+    report.resolutionNote = input.resolutionNote
+    report.updatedAt = new Date().toISOString()
+    report.resolvedAt =
+      input.status === "resolved" || input.status === "dismissed" ? report.updatedAt : null
+
+    this.state.safetyReportsById.set(report.id, report)
+    return cloneSafetyReport(report)
+  }
+
+  async createSafetyAppeal(reportId: string, appellantUserId: string, body: string): Promise<SafetyAppeal> {
+    const report = this.state.safetyReportsById.get(reportId)
+    if (!report) {
+      throw new Error("Report not found.")
+    }
+
+    const existingOpen = Array.from(this.state.safetyAppealsById.values()).find(
+      (appeal) => appeal.reportId === reportId && appeal.appellantUserId === appellantUserId && appeal.status === "open"
+    )
+    if (existingOpen) {
+      throw new Error("An open appeal already exists for this report and user.")
+    }
+
+    const now = new Date().toISOString()
+    const appeal: SafetyAppeal = {
+      id: createId("apl"),
+      reportId,
+      appellantUserId,
+      body,
+      status: "open",
+      reviewerUserId: null,
+      resolutionNote: null,
+      createdAt: now,
+      updatedAt: now,
+      resolvedAt: null
+    }
+
+    this.state.safetyAppealsById.set(appeal.id, appeal)
+    const ids = this.state.safetyAppealIdsByReportId.get(reportId) ?? []
+    ids.push(appeal.id)
+    this.state.safetyAppealIdsByReportId.set(reportId, ids)
+
+    return cloneSafetyAppeal(appeal)
+  }
+
+  async listSafetyAppeals(options: ListSafetyAppealsOptions): Promise<SafetyAppeal[]> {
+    const max = Math.max(1, Math.min(options.limit, 200))
+    const appeals = Array.from(this.state.safetyAppealsById.values())
+      .filter((appeal) => (options.reportId ? appeal.reportId === options.reportId : true))
+      .filter((appeal) => (options.status ? appeal.status === options.status : true))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, max)
+
+    return appeals.map(cloneSafetyAppeal)
+  }
+
+  async getSafetyAppealById(appealId: string): Promise<SafetyAppeal | null> {
+    const appeal = this.state.safetyAppealsById.get(appealId)
+    return appeal ? cloneSafetyAppeal(appeal) : null
+  }
+
+  async updateSafetyAppeal(appealId: string, input: UpdateSafetyAppealInput): Promise<SafetyAppeal | null> {
+    const appeal = this.state.safetyAppealsById.get(appealId)
+    if (!appeal) {
+      return null
+    }
+
+    appeal.status = input.status
+    appeal.reviewerUserId = input.reviewerUserId
+    appeal.resolutionNote = input.resolutionNote
+    appeal.updatedAt = new Date().toISOString()
+    appeal.resolvedAt = input.status === "open" ? null : appeal.updatedAt
+    this.state.safetyAppealsById.set(appeal.id, appeal)
+
+    return cloneSafetyAppeal(appeal)
+  }
+
+  async getAdminAnalyticsOverview(rangeDays: number): Promise<AdminAnalyticsOverview> {
+    const days = Math.max(1, Math.min(rangeDays, 90))
+    const now = Date.now()
+
+    const visibleServerIds = new Set(
+      Array.from(this.state.serversById.values())
+        .filter((server) => !this.state.hiddenServerIds.has(server.id))
+        .map((server) => server.id)
+    )
+
+    const visibleChannels = Array.from(this.state.channelsById.values()).filter((channel) => {
+      if (this.state.hiddenChannelIds.has(channel.id)) {
+        return false
+      }
+      return visibleServerIds.has(channel.serverId)
+    })
+
+    const visibleChannelIds = new Set(visibleChannels.map((channel) => channel.id))
+
+    const visibleMessages = Array.from(this.state.messagesById.values()).filter((message) =>
+      visibleChannelIds.has(message.channelId)
+    )
+
+    const activeUsersWithin = (windowMs: number): number => {
+      const cutoff = now - windowMs
+      const userIds = new Set<string>()
+
+      for (const message of visibleMessages) {
+        if (this.state.systemUserIds.has(message.authorId)) {
+          continue
+        }
+        if (Date.parse(message.createdAt) >= cutoff) {
+          userIds.add(message.authorId)
+        }
+      }
+
+      return userIds.size
+    }
+
+    const messagesByServer = new Map<string, number>()
+    for (const message of visibleMessages) {
+      const channel = this.state.channelsById.get(message.channelId)
+      if (!channel) {
+        continue
+      }
+
+      messagesByServer.set(channel.serverId, (messagesByServer.get(channel.serverId) ?? 0) + 1)
+    }
+
+    const topServersByMessages = Array.from(messagesByServer.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([serverId, messageCount]) => ({
+        serverId,
+        serverName: this.state.serversById.get(serverId)?.name ?? "Unknown",
+        messageCount
+      }))
+
+    return {
+      generatedAt: new Date().toISOString(),
+      rangeDays: days,
+      totals: {
+        users: Array.from(this.state.usersById.keys()).filter((userId) => !this.state.systemUserIds.has(userId)).length,
+        servers: visibleServerIds.size,
+        channels: visibleChannels.length,
+        messages: visibleMessages.length,
+        forumThreads: this.state.forumThreadsById.size,
+        webhooks: Array.from(this.state.webhooksById.values()).filter((webhook) => !webhook.disabledAt).length,
+        bots: Array.from(this.state.botsById.values()).filter((bot) => !bot.revokedAt).length
+      },
+      activeUsers: {
+        day1: activeUsersWithin(24 * 60 * 60 * 1000),
+        day7: activeUsersWithin(7 * 24 * 60 * 60 * 1000),
+        day30: activeUsersWithin(30 * 24 * 60 * 60 * 1000)
+      },
+      safety: {
+        openReports: Array.from(this.state.safetyReportsById.values()).filter((report) => report.status === "open").length,
+        inReviewReports: Array.from(this.state.safetyReportsById.values()).filter(
+          (report) => report.status === "in_review"
+        ).length,
+        openAppeals: Array.from(this.state.safetyAppealsById.values()).filter((appeal) => appeal.status === "open").length
+      },
+      topServersByMessages
+    }
+  }
+
   private removeDmThreadLookup(threadId: string): void {
     for (const [pairKey, value] of this.state.dmThreadIdsByPairKey.entries()) {
       if (value === threadId) {
         this.state.dmThreadIdsByPairKey.delete(pairKey)
       }
     }
+  }
+
+  private async createSystemUser(kind: "bot" | "webhook", name: string): Promise<StoredUser> {
+    const suffix = crypto.randomUUID().replace(/-/g, "").slice(0, 10)
+    const username = `${kind}_${suffix}`
+    const displayName = name.trim() || `${kind} ${suffix.slice(0, 6)}`
+    const user = await this.createUser(
+      `${username}@system.mango.local`,
+      username,
+      displayName,
+      createId("pwd")
+    )
+    this.state.systemUserIds.add(user.id)
+    return user
+  }
+
+  private ensureServerMemberWithDefaultRole(serverId: string, userId: string): void {
+    const members = this.state.membersByServerId.get(serverId) ?? new Set<string>()
+    members.add(userId)
+    this.state.membersByServerId.set(serverId, members)
+
+    const defaultRoleId = (this.state.roleIdsByServerId.get(serverId) ?? [])
+      .map((roleId) => this.state.rolesById.get(roleId))
+      .find((role) => role?.isDefault)?.id
+
+    const roleIds = this.state.memberRoleIdsByServerUser.get(memberRoleKey(serverId, userId)) ?? new Set<string>()
+    if (defaultRoleId) {
+      roleIds.add(defaultRoleId)
+    }
+    this.state.memberRoleIdsByServerUser.set(memberRoleKey(serverId, userId), roleIds)
+  }
+
+  private removeWebhookInternal(webhookId: string): void {
+    const webhook = this.state.webhooksById.get(webhookId)
+    if (!webhook) {
+      return
+    }
+
+    const ids = this.state.webhookIdsByChannelId.get(webhook.channelId) ?? []
+    this.state.webhookIdsByChannelId.set(
+      webhook.channelId,
+      ids.filter((id) => id !== webhookId)
+    )
+    this.state.webhooksById.delete(webhookId)
+  }
+
+  private removeBotInternal(botId: string): void {
+    const bot = this.state.botsById.get(botId)
+    if (!bot) {
+      return
+    }
+
+    const ids = this.state.botIdsByServerId.get(bot.serverId) ?? []
+    this.state.botIdsByServerId.set(
+      bot.serverId,
+      ids.filter((id) => id !== botId)
+    )
+    this.state.botIdByTokenHash.delete(bot.tokenHash)
+    this.state.botsById.delete(botId)
+  }
+
+  private removeSafetyReportInternal(reportId: string): void {
+    this.state.safetyReportsById.delete(reportId)
+
+    const appealIds = this.state.safetyAppealIdsByReportId.get(reportId) ?? []
+    for (const appealId of appealIds) {
+      this.state.safetyAppealsById.delete(appealId)
+    }
+    this.state.safetyAppealIdsByReportId.delete(reportId)
   }
 
   private deleteServerInternal(serverId: string): void {
@@ -1218,9 +1921,37 @@ export class MemoryStore implements AppStore {
         this.state.invitesByCode.delete(code)
       }
     }
+
+    const botIds = [...(this.state.botIdsByServerId.get(serverId) ?? [])]
+    for (const botId of botIds) {
+      this.removeBotInternal(botId)
+    }
+    this.state.botIdsByServerId.delete(serverId)
+
+    for (const [reportId, report] of this.state.safetyReportsById.entries()) {
+      if (report.serverId === serverId) {
+        this.removeSafetyReportInternal(reportId)
+      }
+    }
   }
 
   private deleteChannelInternal(channelId: string): void {
+    const childThreadIds = [...(this.state.forumThreadIdsByParentChannelId.get(channelId) ?? [])]
+    for (const childThreadId of childThreadIds) {
+      const childThread = this.state.forumThreadsById.get(childThreadId)
+      if (childThread) {
+        this.deleteChannelInternal(childThread.threadChannelId)
+      } else {
+        this.removeForumThreadInternal(childThreadId)
+      }
+    }
+
+    const forumThreadId = this.state.forumThreadIdByThreadChannelId.get(channelId)
+    if (forumThreadId) {
+      this.removeForumThreadInternal(forumThreadId)
+      this.removeConversationReadMarkers(forumThreadId)
+    }
+
     const threadId = this.state.directThreadIdByChannelId.get(channelId)
     if (threadId) {
       const thread = this.state.directThreadsById.get(threadId)
@@ -1248,6 +1979,12 @@ export class MemoryStore implements AppStore {
       )
     }
 
+    const webhookIds = [...(this.state.webhookIdsByChannelId.get(channelId) ?? [])]
+    for (const webhookId of webhookIds) {
+      this.removeWebhookInternal(webhookId)
+    }
+    this.state.webhookIdsByChannelId.delete(channelId)
+
     const messageIds = this.state.messageIdsByChannelId.get(channelId) ?? []
     for (const messageId of messageIds) {
       this.state.messagesById.delete(messageId)
@@ -1257,6 +1994,7 @@ export class MemoryStore implements AppStore {
     this.state.messageIdsByChannelId.delete(channelId)
     this.state.overwritesByChannelId.delete(channelId)
     this.state.hiddenChannelIds.delete(channelId)
+    this.state.forumThreadChannelIds.delete(channelId)
     this.state.channelsById.delete(channelId)
     this.removeConversationReadMarkers(channelId)
   }
@@ -1268,6 +2006,23 @@ export class MemoryStore implements AppStore {
         this.state.readMarkersByConversationUser.delete(key)
       }
     }
+  }
+
+  private removeForumThreadInternal(threadId: string): void {
+    const thread = this.state.forumThreadsById.get(threadId)
+    if (!thread) {
+      return
+    }
+
+    const ids = this.state.forumThreadIdsByParentChannelId.get(thread.parentChannelId) ?? []
+    this.state.forumThreadIdsByParentChannelId.set(
+      thread.parentChannelId,
+      ids.filter((id) => id !== threadId)
+    )
+
+    this.state.forumThreadIdByThreadChannelId.delete(thread.threadChannelId)
+    this.state.forumThreadChannelIds.delete(thread.threadChannelId)
+    this.state.forumThreadsById.delete(threadId)
   }
 
   async searchChannels(
@@ -1284,6 +2039,7 @@ export class MemoryStore implements AppStore {
     const max = Math.max(1, Math.min(limit, 100))
     const channels = Array.from(this.state.channelsById.values())
       .filter((channel) => !this.state.hiddenChannelIds.has(channel.id))
+      .filter((channel) => !this.state.forumThreadChannelIds.has(channel.id))
       .filter((channel) => (serverId ? channel.serverId === serverId : true))
       .filter((channel) => channel.name.toLowerCase().includes(normalized))
 

@@ -64,6 +64,7 @@ Then open `http://localhost:3000`.
 - `voice-signaling` issues LiveKit participant JWTs using `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` (local defaults: `devkey` / `secret`).
 - realtime websocket fanout (`/v1/ws`) remains in `api-gateway`; when messaging is proxied, websocket events are published from proxied messaging responses.
 - screen-share controls are behind `ENABLE_SCREEN_SHARE=true` (gateway) and `VOICE_SIGNALING_ENABLE_SCREEN_SHARE=true` (voice signaling).
+- release/admin endpoints are protected by `ADMIN_API_KEY` for `/v1/admin/*` and optional global trust/safety review access.
 - API gateway store modes:
 - `STORE_MODE=postgres` (default): uses Postgres + runs SQL migrations at startup
 - `STORE_MODE=memory`: in-memory fallback mode
@@ -101,6 +102,27 @@ Then open `http://localhost:3000`.
 - `DELETE /v1/messages/:messageId`
 - `POST /v1/messages/:messageId/reactions`
 - `DELETE /v1/messages/:messageId/reactions/:emoji`
+- `POST /v1/channels/:channelId/threads`
+- `GET /v1/channels/:channelId/threads`
+- `GET /v1/threads/:threadId`
+- `PATCH /v1/threads/:threadId`
+- `POST /v1/threads/:threadId/messages`
+- `GET /v1/threads/:threadId/messages`
+- `POST /v1/channels/:channelId/webhooks`
+- `GET /v1/channels/:channelId/webhooks`
+- `POST /v1/webhooks/:webhookId/:token`
+- `POST /v1/servers/:serverId/bots`
+- `GET /v1/servers/:serverId/bots`
+- `POST /v1/servers/:serverId/bots/:botId/revoke`
+- `POST /v1/servers/:serverId/bots/:botId/rotate-token`
+- `POST /v1/bot/messages` (requires `Authorization: Bot <token>`)
+- `POST /v1/safety/reports`
+- `GET /v1/safety/reports`
+- `PATCH /v1/safety/reports/:reportId`
+- `POST /v1/safety/reports/:reportId/appeals`
+- `GET /v1/safety/appeals`
+- `PATCH /v1/safety/appeals/:appealId`
+- `GET /v1/admin/analytics/overview?days=30` (requires `X-Admin-Key`)
 - `GET /v1/ws?token=...` websocket endpoint for live channel events
 
 The web app is now login-gated and chat-oriented:

@@ -1,10 +1,14 @@
 import { SQL } from "bun"
 import type {
+  AdminAnalyticsOverview,
   AuditLogEntry,
   Attachment,
   Channel,
   ChannelPermissionOverwrite,
+  CreatedServerBot,
+  CreatedWebhook,
   DirectThread,
+  ForumThread,
   FriendRequest,
   Message,
   MessageDeletedEvent,
@@ -15,12 +19,17 @@ import type {
   PushSubscription,
   ReadMarker,
   Role,
+  SafetyAppeal,
+  SafetyReport,
   SearchResults,
   SearchScope,
+  ServerBot,
   ServerInvite,
   Server,
-  User
+  User,
+  Webhook
 } from "@mango/contracts"
+import { createHash } from "node:crypto"
 import { createId } from "./id"
 import {
   DEFAULT_MEMBER_PERMISSIONS,
@@ -29,7 +38,17 @@ import {
   sanitizePermissions
 } from "./permissions"
 import { runMigrations } from "./migrations"
-import type { AppStore, StoredUser } from "./store"
+import type {
+  AppStore,
+  CreateForumThreadInput,
+  CreateSafetyReportInput,
+  ListSafetyAppealsOptions,
+  ListSafetyReportsOptions,
+  StoredUser,
+  UpdateForumThreadInput,
+  UpdateSafetyAppealInput,
+  UpdateSafetyReportInput
+} from "./store"
 
 type UserRow = {
   id: string
@@ -186,6 +205,78 @@ type PushSubscriptionRow = {
   updated_at: string | Date
 }
 
+type ForumThreadRow = {
+  id: string
+  server_id: string
+  parent_channel_id: string
+  thread_channel_id: string
+  owner_id: string
+  title: string
+  tags: unknown
+  status: "open" | "archived"
+  created_at: string | Date
+  updated_at: string | Date
+  last_message_at: string | Date | null
+}
+
+type WebhookRow = {
+  id: string
+  server_id: string
+  channel_id: string
+  created_by: string
+  sender_user_id: string
+  name: string
+  token_hash: string
+  token_hint: string
+  created_at: string | Date
+  updated_at: string | Date
+  last_used_at: string | Date | null
+  disabled_at: string | Date | null
+}
+
+type BotRow = {
+  id: string
+  server_id: string
+  user_id: string
+  created_by: string
+  name: string
+  token_hash: string
+  token_hint: string
+  created_at: string | Date
+  updated_at: string | Date
+  last_used_at: string | Date | null
+  revoked_at: string | Date | null
+}
+
+type SafetyReportRow = {
+  id: string
+  server_id: string | null
+  reporter_user_id: string
+  target_type: "message" | "user" | "channel" | "server"
+  target_id: string
+  reason_code: string
+  details: string | null
+  status: "open" | "in_review" | "resolved" | "dismissed"
+  assigned_moderator_id: string | null
+  resolution_note: string | null
+  created_at: string | Date
+  updated_at: string | Date
+  resolved_at: string | Date | null
+}
+
+type SafetyAppealRow = {
+  id: string
+  report_id: string
+  appellant_user_id: string
+  body: string
+  status: "open" | "accepted" | "rejected"
+  reviewer_user_id: string | null
+  resolution_note: string | null
+  created_at: string | Date
+  updated_at: string | Date
+  resolved_at: string | Date | null
+}
+
 function toIso(value: string | Date): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString()
 }
@@ -214,6 +305,41 @@ function parsePermissions(value: unknown): Permission[] {
   }
 
   return []
+}
+
+function parseStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string")
+  }
+
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown
+      return Array.isArray(parsed)
+        ? parsed.filter((item): item is string => typeof item === "string")
+        : []
+    } catch {
+      return []
+    }
+  }
+
+  return []
+}
+
+function normalizeThreadTags(tags: string[]): string[] {
+  return Array.from(
+    new Set(
+      tags.map((tag) => tag.trim().toLowerCase()).filter((tag) => tag.length > 0 && tag.length <= 32)
+    )
+  ).slice(0, 10)
+}
+
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex")
+}
+
+function tokenHint(token: string): string {
+  return token.slice(0, 8)
 }
 
 function mapUser(row: UserRow): StoredUser {
@@ -317,6 +443,85 @@ function mapReadMarker(row: ReadMarkerRow): ReadMarker {
     userId: row.user_id,
     lastReadMessageId: row.last_read_message_id,
     updatedAt: toIso(row.updated_at)
+  }
+}
+
+function mapForumThread(row: ForumThreadRow): ForumThread {
+  return {
+    id: row.id,
+    serverId: row.server_id,
+    parentChannelId: row.parent_channel_id,
+    threadChannelId: row.thread_channel_id,
+    title: row.title,
+    ownerId: row.owner_id,
+    tags: normalizeThreadTags(parseStringArray(row.tags)),
+    status: row.status,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+    lastMessageAt: row.last_message_at ? toIso(row.last_message_at) : null
+  }
+}
+
+function mapWebhook(row: WebhookRow): Webhook {
+  return {
+    id: row.id,
+    serverId: row.server_id,
+    channelId: row.channel_id,
+    createdBy: row.created_by,
+    name: row.name,
+    tokenHint: row.token_hint,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+    lastUsedAt: row.last_used_at ? toIso(row.last_used_at) : null,
+    disabledAt: row.disabled_at ? toIso(row.disabled_at) : null
+  }
+}
+
+function mapBot(row: BotRow): ServerBot {
+  return {
+    id: row.id,
+    serverId: row.server_id,
+    userId: row.user_id,
+    createdBy: row.created_by,
+    name: row.name,
+    tokenHint: row.token_hint,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+    lastUsedAt: row.last_used_at ? toIso(row.last_used_at) : null,
+    revokedAt: row.revoked_at ? toIso(row.revoked_at) : null
+  }
+}
+
+function mapSafetyReport(row: SafetyReportRow): SafetyReport {
+  return {
+    id: row.id,
+    serverId: row.server_id,
+    reporterUserId: row.reporter_user_id,
+    targetType: row.target_type,
+    targetId: row.target_id,
+    reasonCode: row.reason_code,
+    details: row.details,
+    status: row.status,
+    assignedModeratorId: row.assigned_moderator_id,
+    resolutionNote: row.resolution_note,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+    resolvedAt: row.resolved_at ? toIso(row.resolved_at) : null
+  }
+}
+
+function mapSafetyAppeal(row: SafetyAppealRow): SafetyAppeal {
+  return {
+    id: row.id,
+    reportId: row.report_id,
+    appellantUserId: row.appellant_user_id,
+    body: row.body,
+    status: row.status,
+    reviewerUserId: row.reviewer_user_id,
+    resolutionNote: row.resolution_note,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+    resolvedAt: row.resolved_at ? toIso(row.resolved_at) : null
   }
 }
 
@@ -484,6 +689,7 @@ export class PostgresStore implements AppStore {
       SELECT id, email, username, display_name, created_at
       FROM users
       WHERE id <> ${excludeUserId}
+        AND COALESCE(is_system, FALSE) = FALSE
         AND (
           username ILIKE ${pattern}
           OR display_name ILIKE ${pattern}
@@ -958,6 +1164,174 @@ export class PostgresStore implements AppStore {
     return left
   }
 
+  async createForumThread(input: CreateForumThreadInput): Promise<{ thread: ForumThread; starterMessage: Message }> {
+    const threadId = createId("fth")
+    const threadChannelId = createId("chn")
+    const starterMessageId = createId("msg")
+    const createdAt = new Date().toISOString()
+    const normalizedTitle = input.title.trim() || "Untitled thread"
+    const normalizedTags = normalizeThreadTags(input.tags)
+
+    await this.sql.begin(async (tx) => {
+      const parentRows = await tx<{ server_id: string }[]>`
+        SELECT server_id
+        FROM channels
+        WHERE id = ${input.parentChannelId}
+          AND is_direct_thread_backing = FALSE
+        LIMIT 1
+      `
+
+      const parent = parentRows[0]
+      if (!parent) {
+        throw new Error("Parent channel not found.")
+      }
+
+      await tx`
+        INSERT INTO channels (id, server_id, name, channel_type, is_direct_thread_backing, created_at)
+        VALUES (${threadChannelId}, ${parent.server_id}, ${normalizedTitle}, 'text', FALSE, ${createdAt})
+      `
+
+      await tx`
+        INSERT INTO forum_threads (
+          id,
+          server_id,
+          parent_channel_id,
+          thread_channel_id,
+          owner_id,
+          title,
+          tags,
+          status,
+          created_at,
+          updated_at,
+          last_message_at
+        )
+        VALUES (
+          ${threadId},
+          ${parent.server_id},
+          ${input.parentChannelId},
+          ${threadChannelId},
+          ${input.ownerId},
+          ${normalizedTitle},
+          ${JSON.stringify(normalizedTags)},
+          'open',
+          ${createdAt},
+          ${createdAt},
+          ${createdAt}
+        )
+      `
+
+      await tx`
+        INSERT INTO messages (id, channel_id, author_id, body, created_at)
+        VALUES (${starterMessageId}, ${threadChannelId}, ${input.ownerId}, ${input.body}, ${createdAt})
+      `
+
+      for (const attachment of input.attachments) {
+        const attachmentId = attachment.id?.trim() || createId("att")
+        await tx`
+          INSERT INTO message_attachments (
+            id, message_id, file_name, content_type, size_bytes, url, uploaded_by, created_at
+          )
+          VALUES (
+            ${attachmentId},
+            ${starterMessageId},
+            ${attachment.fileName},
+            ${attachment.contentType},
+            ${attachment.sizeBytes},
+            ${attachment.url},
+            ${attachment.uploadedBy || input.ownerId},
+            ${attachment.createdAt || createdAt}
+          )
+        `
+      }
+    })
+
+    const thread = await this.getForumThreadById(threadId)
+    const starterMessage = await this.getMessageById(starterMessageId)
+
+    if (!thread || !starterMessage) {
+      throw new Error("Failed to create forum thread.")
+    }
+
+    return {
+      thread,
+      starterMessage
+    }
+  }
+
+  async listForumThreads(parentChannelId: string, includeArchived: boolean): Promise<ForumThread[]> {
+    const rows = await this.sql<ForumThreadRow[]>`
+      SELECT
+        id,
+        server_id,
+        parent_channel_id,
+        thread_channel_id,
+        owner_id,
+        title,
+        tags,
+        status,
+        created_at,
+        updated_at,
+        last_message_at
+      FROM forum_threads
+      WHERE parent_channel_id = ${parentChannelId}
+        AND (${includeArchived}::boolean = TRUE OR status <> 'archived')
+      ORDER BY COALESCE(last_message_at, created_at) DESC, created_at DESC
+    `
+
+    return rows.map(mapForumThread)
+  }
+
+  async getForumThreadById(threadId: string): Promise<ForumThread | null> {
+    const rows = await this.sql<ForumThreadRow[]>`
+      SELECT
+        id,
+        server_id,
+        parent_channel_id,
+        thread_channel_id,
+        owner_id,
+        title,
+        tags,
+        status,
+        created_at,
+        updated_at,
+        last_message_at
+      FROM forum_threads
+      WHERE id = ${threadId}
+      LIMIT 1
+    `
+
+    return rows[0] ? mapForumThread(rows[0]) : null
+  }
+
+  async updateForumThread(threadId: string, input: UpdateForumThreadInput): Promise<ForumThread | null> {
+    const title = input.title === null ? null : input.title.trim()
+    const tags = input.tags === null ? null : normalizeThreadTags(input.tags)
+
+    const rows = await this.sql<ForumThreadRow[]>`
+      UPDATE forum_threads
+      SET
+        title = COALESCE(${title}, title),
+        tags = COALESCE(${tags ? JSON.stringify(tags) : null}::jsonb, tags),
+        status = COALESCE(${input.status}::text, status),
+        updated_at = NOW()
+      WHERE id = ${threadId}
+      RETURNING
+        id,
+        server_id,
+        parent_channel_id,
+        thread_channel_id,
+        owner_id,
+        title,
+        tags,
+        status,
+        created_at,
+        updated_at,
+        last_message_at
+    `
+
+    return rows[0] ? mapForumThread(rows[0]) : null
+  }
+
   async createServer(name: string, ownerId: string): Promise<Server> {
     const serverId = createId("srv")
     const createdAt = new Date().toISOString()
@@ -1330,11 +1704,13 @@ export class PostgresStore implements AppStore {
 
   async listChannels(serverId: string): Promise<Channel[]> {
     const rows = await this.sql<ChannelRow[]>`
-      SELECT id, server_id, name, channel_type, created_at
-      FROM channels
-      WHERE server_id = ${serverId}
-        AND is_direct_thread_backing = FALSE
-      ORDER BY created_at ASC
+      SELECT c.id, c.server_id, c.name, c.channel_type, c.created_at
+      FROM channels c
+      LEFT JOIN forum_threads ft ON ft.thread_channel_id = c.id
+      WHERE c.server_id = ${serverId}
+        AND c.is_direct_thread_backing = FALSE
+        AND ft.id IS NULL
+      ORDER BY c.created_at ASC
     `
     return rows.map(mapChannel)
   }
@@ -1385,6 +1761,33 @@ export class PostgresStore implements AppStore {
         return false
       }
 
+      const forumChildRows = await tx<{ id: string; thread_channel_id: string }[]>`
+        SELECT id, thread_channel_id
+        FROM forum_threads
+        WHERE parent_channel_id = ${channel.id}
+      `
+
+      for (const child of forumChildRows) {
+        await tx`
+          DELETE FROM read_markers
+          WHERE conversation_id IN (${child.id}, ${child.thread_channel_id})
+        `
+
+        await tx`
+          DELETE FROM channels
+          WHERE id = ${child.thread_channel_id}
+        `
+      }
+
+      const forumThreadRows = await tx<{ id: string }[]>`
+        SELECT id
+        FROM forum_threads
+        WHERE thread_channel_id = ${channel.id}
+        LIMIT 1
+      `
+
+      const forumThread = forumThreadRows[0]
+
       const threadRows = await tx<{ id: string; server_id: string }[]>`
         SELECT id, server_id
         FROM direct_threads
@@ -1403,6 +1806,13 @@ export class PostgresStore implements AppStore {
         await tx`
           DELETE FROM read_markers
           WHERE conversation_id = ${thread.id}
+        `
+      }
+
+      if (forumThread) {
+        await tx`
+          DELETE FROM read_markers
+          WHERE conversation_id = ${forumThread.id}
         `
       }
 
@@ -1462,6 +1872,18 @@ export class PostgresStore implements AppStore {
       return false
     }
 
+    if (permission === "send_messages") {
+      const threadRows = await this.sql<{ status: "open" | "archived" }[]>`
+        SELECT status
+        FROM forum_threads
+        WHERE thread_channel_id = ${channelId}
+        LIMIT 1
+      `
+      if (threadRows[0]?.status === "archived") {
+        return false
+      }
+    }
+
     if (permission === "send_messages" && (await this.isUserTimedOut(server.id, userId))) {
       return false
     }
@@ -1502,6 +1924,12 @@ export class PostgresStore implements AppStore {
           )
         `
       }
+
+      await tx`
+        UPDATE forum_threads
+        SET last_message_at = ${createdAt}, updated_at = ${createdAt}
+        WHERE thread_channel_id = ${channelId}
+      `
     })
 
     const message = await this.getMessageById(id)
@@ -1845,6 +2273,791 @@ export class PostgresStore implements AppStore {
     `
   }
 
+  async createWebhook(channelId: string, createdBy: string, name: string): Promise<CreatedWebhook> {
+    const channel = await this.getChannelById(channelId)
+    if (!channel) {
+      throw new Error("Channel not found.")
+    }
+
+    const token = `whk_${crypto.randomUUID().replace(/-/g, "")}`
+    const tokenHash = hashToken(token)
+    const now = new Date().toISOString()
+
+    const row = await this.sql.begin(async (tx) => {
+      const senderUserId = await this.createSystemUserTx(tx, "webhook", name)
+
+      const webhookId = createId("whk")
+      const rows = await tx<WebhookRow[]>`
+        INSERT INTO channel_webhooks (
+          id,
+          server_id,
+          channel_id,
+          created_by,
+          sender_user_id,
+          name,
+          token_hash,
+          token_hint,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          ${webhookId},
+          ${channel.serverId},
+          ${channel.id},
+          ${createdBy},
+          ${senderUserId},
+          ${name.trim() || "Webhook"},
+          ${tokenHash},
+          ${tokenHint(token)},
+          ${now},
+          ${now}
+        )
+        RETURNING
+          id,
+          server_id,
+          channel_id,
+          created_by,
+          sender_user_id,
+          name,
+          token_hash,
+          token_hint,
+          created_at,
+          updated_at,
+          last_used_at,
+          disabled_at
+      `
+
+      return rows[0]
+    })
+
+    return {
+      webhook: mapWebhook(row),
+      token
+    }
+  }
+
+  async listWebhooks(channelId: string): Promise<Webhook[]> {
+    const rows = await this.sql<WebhookRow[]>`
+      SELECT
+        id,
+        server_id,
+        channel_id,
+        created_by,
+        sender_user_id,
+        name,
+        token_hash,
+        token_hint,
+        created_at,
+        updated_at,
+        last_used_at,
+        disabled_at
+      FROM channel_webhooks
+      WHERE channel_id = ${channelId}
+      ORDER BY created_at DESC
+    `
+
+    return rows.map(mapWebhook)
+  }
+
+  async deleteWebhook(webhookId: string): Promise<boolean> {
+    const rows = await this.sql<{ id: string }[]>`
+      DELETE FROM channel_webhooks
+      WHERE id = ${webhookId}
+      RETURNING id
+    `
+
+    return Boolean(rows[0]?.id)
+  }
+
+  async executeWebhook(
+    webhookId: string,
+    token: string,
+    body: string,
+    attachments: Attachment[]
+  ): Promise<Message | null> {
+    const createdAt = new Date().toISOString()
+    const messageId = createId("msg")
+
+    const inserted = await this.sql.begin(async (tx) => {
+      const webhookRows = await tx<WebhookRow[]>`
+        SELECT
+          id,
+          server_id,
+          channel_id,
+          created_by,
+          sender_user_id,
+          name,
+          token_hash,
+          token_hint,
+          created_at,
+          updated_at,
+          last_used_at,
+          disabled_at
+        FROM channel_webhooks
+        WHERE id = ${webhookId}
+          AND token_hash = ${hashToken(token)}
+          AND disabled_at IS NULL
+        LIMIT 1
+      `
+
+      const webhook = webhookRows[0]
+      if (!webhook) {
+        return false
+      }
+
+      await tx`
+        UPDATE channel_webhooks
+        SET last_used_at = ${createdAt}, updated_at = ${createdAt}
+        WHERE id = ${webhook.id}
+      `
+
+      await tx`
+        INSERT INTO messages (id, channel_id, author_id, body, created_at)
+        VALUES (${messageId}, ${webhook.channel_id}, ${webhook.sender_user_id}, ${body}, ${createdAt})
+      `
+
+      for (const attachment of attachments) {
+        const attachmentId = attachment.id?.trim() || createId("att")
+        await tx`
+          INSERT INTO message_attachments (
+            id, message_id, file_name, content_type, size_bytes, url, uploaded_by, created_at
+          )
+          VALUES (
+            ${attachmentId},
+            ${messageId},
+            ${attachment.fileName},
+            ${attachment.contentType},
+            ${attachment.sizeBytes},
+            ${attachment.url},
+            ${attachment.uploadedBy || webhook.sender_user_id},
+            ${attachment.createdAt || createdAt}
+          )
+        `
+      }
+
+      await tx`
+        UPDATE forum_threads
+        SET last_message_at = ${createdAt}, updated_at = ${createdAt}
+        WHERE thread_channel_id = ${webhook.channel_id}
+      `
+
+      return true
+    })
+
+    if (!inserted) {
+      return null
+    }
+
+    return await this.getMessageById(messageId)
+  }
+
+  async createServerBot(serverId: string, createdBy: string, name: string): Promise<CreatedServerBot> {
+    const server = await this.getServerById(serverId)
+    if (!server) {
+      throw new Error("Server not found.")
+    }
+
+    const token = `bot_${crypto.randomUUID().replace(/-/g, "")}`
+    const tokenHash = hashToken(token)
+    const now = new Date().toISOString()
+
+    const row = await this.sql.begin(async (tx) => {
+      const botUserId = await this.createSystemUserTx(tx, "bot", name)
+      await this.ensureServerMemberWithDefaultRoleTx(tx, server.id, botUserId)
+
+      const botId = createId("bot")
+      const rows = await tx<BotRow[]>`
+        INSERT INTO server_bots (
+          id,
+          server_id,
+          user_id,
+          created_by,
+          name,
+          token_hash,
+          token_hint,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          ${botId},
+          ${server.id},
+          ${botUserId},
+          ${createdBy},
+          ${name.trim() || "Bot"},
+          ${tokenHash},
+          ${tokenHint(token)},
+          ${now},
+          ${now}
+        )
+        RETURNING
+          id,
+          server_id,
+          user_id,
+          created_by,
+          name,
+          token_hash,
+          token_hint,
+          created_at,
+          updated_at,
+          last_used_at,
+          revoked_at
+      `
+
+      return rows[0]
+    })
+
+    return {
+      bot: mapBot(row),
+      token
+    }
+  }
+
+  async listServerBots(serverId: string): Promise<ServerBot[]> {
+    const rows = await this.sql<BotRow[]>`
+      SELECT
+        id,
+        server_id,
+        user_id,
+        created_by,
+        name,
+        token_hash,
+        token_hint,
+        created_at,
+        updated_at,
+        last_used_at,
+        revoked_at
+      FROM server_bots
+      WHERE server_id = ${serverId}
+      ORDER BY created_at DESC
+    `
+
+    return rows.map(mapBot)
+  }
+
+  async revokeServerBot(serverId: string, botId: string): Promise<ServerBot | null> {
+    const now = new Date().toISOString()
+    const rows = await this.sql<BotRow[]>`
+      UPDATE server_bots
+      SET revoked_at = ${now}, updated_at = ${now}
+      WHERE id = ${botId}
+        AND server_id = ${serverId}
+      RETURNING
+        id,
+        server_id,
+        user_id,
+        created_by,
+        name,
+        token_hash,
+        token_hint,
+        created_at,
+        updated_at,
+        last_used_at,
+        revoked_at
+    `
+
+    return rows[0] ? mapBot(rows[0]) : null
+  }
+
+  async rotateServerBotToken(serverId: string, botId: string): Promise<CreatedServerBot | null> {
+    const token = `bot_${crypto.randomUUID().replace(/-/g, "")}`
+    const nextHash = hashToken(token)
+    const now = new Date().toISOString()
+
+    const rows = await this.sql<BotRow[]>`
+      UPDATE server_bots
+      SET token_hash = ${nextHash}, token_hint = ${tokenHint(token)}, updated_at = ${now}
+      WHERE id = ${botId}
+        AND server_id = ${serverId}
+        AND revoked_at IS NULL
+      RETURNING
+        id,
+        server_id,
+        user_id,
+        created_by,
+        name,
+        token_hash,
+        token_hint,
+        created_at,
+        updated_at,
+        last_used_at,
+        revoked_at
+    `
+
+    if (!rows[0]) {
+      return null
+    }
+
+    return {
+      bot: mapBot(rows[0]),
+      token
+    }
+  }
+
+  async executeBotMessage(
+    token: string,
+    channelId: string,
+    body: string,
+    attachments: Attachment[]
+  ): Promise<Message | null> {
+    const botRows = await this.sql<BotRow[]>`
+      SELECT
+        id,
+        server_id,
+        user_id,
+        created_by,
+        name,
+        token_hash,
+        token_hint,
+        created_at,
+        updated_at,
+        last_used_at,
+        revoked_at
+      FROM server_bots
+      WHERE token_hash = ${hashToken(token)}
+        AND revoked_at IS NULL
+      LIMIT 1
+    `
+
+    const bot = botRows[0]
+    if (!bot) {
+      return null
+    }
+
+    const channel = await this.getChannelById(channelId)
+    if (!channel || channel.serverId !== bot.server_id) {
+      return null
+    }
+
+    if (!(await this.hasChannelPermission(channelId, bot.user_id, "send_messages"))) {
+      return null
+    }
+
+    const message = await this.createMessage(channelId, bot.user_id, body, attachments)
+
+    await this.sql`
+      UPDATE server_bots
+      SET last_used_at = NOW(), updated_at = NOW()
+      WHERE id = ${bot.id}
+    `
+
+    return message
+  }
+
+  async createSafetyReport(input: CreateSafetyReportInput): Promise<SafetyReport> {
+    const id = createId("rpt")
+    const now = new Date().toISOString()
+
+    const rows = await this.sql<SafetyReportRow[]>`
+      INSERT INTO safety_reports (
+        id,
+        server_id,
+        reporter_user_id,
+        target_type,
+        target_id,
+        reason_code,
+        details,
+        status,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        ${id},
+        ${input.serverId},
+        ${input.reporterUserId},
+        ${input.targetType},
+        ${input.targetId},
+        ${input.reasonCode},
+        ${input.details},
+        'open',
+        ${now},
+        ${now}
+      )
+      RETURNING
+        id,
+        server_id,
+        reporter_user_id,
+        target_type,
+        target_id,
+        reason_code,
+        details,
+        status,
+        assigned_moderator_id,
+        resolution_note,
+        created_at,
+        updated_at,
+        resolved_at
+    `
+
+    return mapSafetyReport(rows[0])
+  }
+
+  async listSafetyReports(options: ListSafetyReportsOptions): Promise<SafetyReport[]> {
+    const max = Math.max(1, Math.min(options.limit, 200))
+    const rows = await this.sql<SafetyReportRow[]>`
+      SELECT
+        id,
+        server_id,
+        reporter_user_id,
+        target_type,
+        target_id,
+        reason_code,
+        details,
+        status,
+        assigned_moderator_id,
+        resolution_note,
+        created_at,
+        updated_at,
+        resolved_at
+      FROM safety_reports
+      WHERE (${options.serverId}::text IS NULL OR server_id = ${options.serverId})
+        AND (${options.status}::text IS NULL OR status = ${options.status})
+      ORDER BY created_at DESC
+      LIMIT ${max}
+    `
+
+    return rows.map(mapSafetyReport)
+  }
+
+  async getSafetyReportById(reportId: string): Promise<SafetyReport | null> {
+    const rows = await this.sql<SafetyReportRow[]>`
+      SELECT
+        id,
+        server_id,
+        reporter_user_id,
+        target_type,
+        target_id,
+        reason_code,
+        details,
+        status,
+        assigned_moderator_id,
+        resolution_note,
+        created_at,
+        updated_at,
+        resolved_at
+      FROM safety_reports
+      WHERE id = ${reportId}
+      LIMIT 1
+    `
+
+    return rows[0] ? mapSafetyReport(rows[0]) : null
+  }
+
+  async updateSafetyReport(reportId: string, input: UpdateSafetyReportInput): Promise<SafetyReport | null> {
+    const resolvedAt =
+      input.status === "resolved" || input.status === "dismissed" ? new Date().toISOString() : null
+
+    const rows = await this.sql<SafetyReportRow[]>`
+      UPDATE safety_reports
+      SET
+        status = ${input.status},
+        assigned_moderator_id = ${input.assignedModeratorId},
+        resolution_note = ${input.resolutionNote},
+        updated_at = NOW(),
+        resolved_at = ${resolvedAt}
+      WHERE id = ${reportId}
+      RETURNING
+        id,
+        server_id,
+        reporter_user_id,
+        target_type,
+        target_id,
+        reason_code,
+        details,
+        status,
+        assigned_moderator_id,
+        resolution_note,
+        created_at,
+        updated_at,
+        resolved_at
+    `
+
+    return rows[0] ? mapSafetyReport(rows[0]) : null
+  }
+
+  async createSafetyAppeal(reportId: string, appellantUserId: string, body: string): Promise<SafetyAppeal> {
+    const report = await this.getSafetyReportById(reportId)
+    if (!report) {
+      throw new Error("Report not found.")
+    }
+
+    const existingRows = await this.sql<{ id: string }[]>`
+      SELECT id
+      FROM safety_appeals
+      WHERE report_id = ${reportId}
+        AND appellant_user_id = ${appellantUserId}
+        AND status = 'open'
+      LIMIT 1
+    `
+
+    if (existingRows[0]?.id) {
+      throw new Error("An open appeal already exists for this report and user.")
+    }
+
+    const id = createId("apl")
+    const now = new Date().toISOString()
+    const rows = await this.sql<SafetyAppealRow[]>`
+      INSERT INTO safety_appeals (
+        id,
+        report_id,
+        appellant_user_id,
+        body,
+        status,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        ${id},
+        ${reportId},
+        ${appellantUserId},
+        ${body},
+        'open',
+        ${now},
+        ${now}
+      )
+      RETURNING
+        id,
+        report_id,
+        appellant_user_id,
+        body,
+        status,
+        reviewer_user_id,
+        resolution_note,
+        created_at,
+        updated_at,
+        resolved_at
+    `
+
+    return mapSafetyAppeal(rows[0])
+  }
+
+  async listSafetyAppeals(options: ListSafetyAppealsOptions): Promise<SafetyAppeal[]> {
+    const max = Math.max(1, Math.min(options.limit, 200))
+    const rows = await this.sql<SafetyAppealRow[]>`
+      SELECT
+        id,
+        report_id,
+        appellant_user_id,
+        body,
+        status,
+        reviewer_user_id,
+        resolution_note,
+        created_at,
+        updated_at,
+        resolved_at
+      FROM safety_appeals
+      WHERE (${options.reportId}::text IS NULL OR report_id = ${options.reportId})
+        AND (${options.status}::text IS NULL OR status = ${options.status})
+      ORDER BY created_at DESC
+      LIMIT ${max}
+    `
+
+    return rows.map(mapSafetyAppeal)
+  }
+
+  async getSafetyAppealById(appealId: string): Promise<SafetyAppeal | null> {
+    const rows = await this.sql<SafetyAppealRow[]>`
+      SELECT
+        id,
+        report_id,
+        appellant_user_id,
+        body,
+        status,
+        reviewer_user_id,
+        resolution_note,
+        created_at,
+        updated_at,
+        resolved_at
+      FROM safety_appeals
+      WHERE id = ${appealId}
+      LIMIT 1
+    `
+
+    return rows[0] ? mapSafetyAppeal(rows[0]) : null
+  }
+
+  async updateSafetyAppeal(appealId: string, input: UpdateSafetyAppealInput): Promise<SafetyAppeal | null> {
+    const resolvedAt = input.status === "open" ? null : new Date().toISOString()
+
+    const rows = await this.sql<SafetyAppealRow[]>`
+      UPDATE safety_appeals
+      SET
+        status = ${input.status},
+        reviewer_user_id = ${input.reviewerUserId},
+        resolution_note = ${input.resolutionNote},
+        updated_at = NOW(),
+        resolved_at = ${resolvedAt}
+      WHERE id = ${appealId}
+      RETURNING
+        id,
+        report_id,
+        appellant_user_id,
+        body,
+        status,
+        reviewer_user_id,
+        resolution_note,
+        created_at,
+        updated_at,
+        resolved_at
+    `
+
+    return rows[0] ? mapSafetyAppeal(rows[0]) : null
+  }
+
+  async getAdminAnalyticsOverview(rangeDays: number): Promise<AdminAnalyticsOverview> {
+    const days = Math.max(1, Math.min(rangeDays, 90))
+
+    const usersCountRows = await this.sql<{ count: number }[]>`
+      SELECT COUNT(*)::int AS count
+      FROM users
+      WHERE COALESCE(is_system, FALSE) = FALSE
+    `
+
+    const serversCountRows = await this.sql<{ count: number }[]>`
+      SELECT COUNT(*)::int AS count
+      FROM servers
+      WHERE COALESCE(is_direct_thread_backing, FALSE) = FALSE
+    `
+
+    const channelsCountRows = await this.sql<{ count: number }[]>`
+      SELECT COUNT(*)::int AS count
+      FROM channels c
+      INNER JOIN servers s ON s.id = c.server_id
+      LEFT JOIN forum_threads ft ON ft.thread_channel_id = c.id
+      WHERE c.is_direct_thread_backing = FALSE
+        AND COALESCE(s.is_direct_thread_backing, FALSE) = FALSE
+        AND ft.id IS NULL
+    `
+
+    const messagesCountRows = await this.sql<{ count: number }[]>`
+      SELECT COUNT(*)::int AS count
+      FROM messages m
+      INNER JOIN channels c ON c.id = m.channel_id
+      INNER JOIN servers s ON s.id = c.server_id
+      WHERE c.is_direct_thread_backing = FALSE
+        AND COALESCE(s.is_direct_thread_backing, FALSE) = FALSE
+    `
+
+    const forumThreadsCountRows = await this.sql<{ count: number }[]>`
+      SELECT COUNT(*)::int AS count
+      FROM forum_threads ft
+      INNER JOIN servers s ON s.id = ft.server_id
+      WHERE COALESCE(s.is_direct_thread_backing, FALSE) = FALSE
+    `
+
+    const webhooksCountRows = await this.sql<{ count: number }[]>`
+      SELECT COUNT(*)::int AS count
+      FROM channel_webhooks
+      WHERE disabled_at IS NULL
+    `
+
+    const botsCountRows = await this.sql<{ count: number }[]>`
+      SELECT COUNT(*)::int AS count
+      FROM server_bots
+      WHERE revoked_at IS NULL
+    `
+
+    const activeUsersDay1Rows = await this.sql<{ count: number }[]>`
+      SELECT COUNT(DISTINCT m.author_id)::int AS count
+      FROM messages m
+      INNER JOIN users u ON u.id = m.author_id
+      INNER JOIN channels c ON c.id = m.channel_id
+      INNER JOIN servers s ON s.id = c.server_id
+      WHERE COALESCE(u.is_system, FALSE) = FALSE
+        AND c.is_direct_thread_backing = FALSE
+        AND COALESCE(s.is_direct_thread_backing, FALSE) = FALSE
+        AND m.created_at >= NOW() - INTERVAL '1 day'
+    `
+
+    const activeUsersDay7Rows = await this.sql<{ count: number }[]>`
+      SELECT COUNT(DISTINCT m.author_id)::int AS count
+      FROM messages m
+      INNER JOIN users u ON u.id = m.author_id
+      INNER JOIN channels c ON c.id = m.channel_id
+      INNER JOIN servers s ON s.id = c.server_id
+      WHERE COALESCE(u.is_system, FALSE) = FALSE
+        AND c.is_direct_thread_backing = FALSE
+        AND COALESCE(s.is_direct_thread_backing, FALSE) = FALSE
+        AND m.created_at >= NOW() - INTERVAL '7 days'
+    `
+
+    const activeUsersDay30Rows = await this.sql<{ count: number }[]>`
+      SELECT COUNT(DISTINCT m.author_id)::int AS count
+      FROM messages m
+      INNER JOIN users u ON u.id = m.author_id
+      INNER JOIN channels c ON c.id = m.channel_id
+      INNER JOIN servers s ON s.id = c.server_id
+      WHERE COALESCE(u.is_system, FALSE) = FALSE
+        AND c.is_direct_thread_backing = FALSE
+        AND COALESCE(s.is_direct_thread_backing, FALSE) = FALSE
+        AND m.created_at >= NOW() - INTERVAL '30 days'
+    `
+
+    const openReportsRows = await this.sql<{ count: number }[]>`
+      SELECT COUNT(*)::int AS count
+      FROM safety_reports
+      WHERE status = 'open'
+    `
+
+    const inReviewReportsRows = await this.sql<{ count: number }[]>`
+      SELECT COUNT(*)::int AS count
+      FROM safety_reports
+      WHERE status = 'in_review'
+    `
+
+    const openAppealsRows = await this.sql<{ count: number }[]>`
+      SELECT COUNT(*)::int AS count
+      FROM safety_appeals
+      WHERE status = 'open'
+    `
+
+    const topServerRows = await this.sql<{ server_id: string; server_name: string; message_count: number }[]>`
+      SELECT
+        s.id AS server_id,
+        s.name AS server_name,
+        COUNT(m.id)::int AS message_count
+      FROM servers s
+      LEFT JOIN channels c
+        ON c.server_id = s.id
+       AND c.is_direct_thread_backing = FALSE
+      LEFT JOIN messages m
+        ON m.channel_id = c.id
+      WHERE COALESCE(s.is_direct_thread_backing, FALSE) = FALSE
+      GROUP BY s.id, s.name
+      HAVING COUNT(m.id) > 0
+      ORDER BY message_count DESC
+      LIMIT 5
+    `
+
+    return {
+      generatedAt: new Date().toISOString(),
+      rangeDays: days,
+      totals: {
+        users: Number(usersCountRows[0]?.count ?? 0),
+        servers: Number(serversCountRows[0]?.count ?? 0),
+        channels: Number(channelsCountRows[0]?.count ?? 0),
+        messages: Number(messagesCountRows[0]?.count ?? 0),
+        forumThreads: Number(forumThreadsCountRows[0]?.count ?? 0),
+        webhooks: Number(webhooksCountRows[0]?.count ?? 0),
+        bots: Number(botsCountRows[0]?.count ?? 0)
+      },
+      activeUsers: {
+        day1: Number(activeUsersDay1Rows[0]?.count ?? 0),
+        day7: Number(activeUsersDay7Rows[0]?.count ?? 0),
+        day30: Number(activeUsersDay30Rows[0]?.count ?? 0)
+      },
+      safety: {
+        openReports: Number(openReportsRows[0]?.count ?? 0),
+        inReviewReports: Number(inReviewReportsRows[0]?.count ?? 0),
+        openAppeals: Number(openAppealsRows[0]?.count ?? 0)
+      },
+      topServersByMessages: topServerRows.map((row) => ({
+        serverId: row.server_id,
+        serverName: row.server_name,
+        messageCount: Number(row.message_count)
+      }))
+    }
+  }
+
   async searchChannels(
     query: string,
     userId: string,
@@ -1864,7 +3077,9 @@ export class PostgresStore implements AppStore {
       INNER JOIN server_members sm
         ON sm.server_id = c.server_id
        AND sm.user_id = ${userId}
+      LEFT JOIN forum_threads ft ON ft.thread_channel_id = c.id
       WHERE c.is_direct_thread_backing = FALSE
+        AND ft.id IS NULL
         AND c.name ILIKE ${pattern}
         AND (${serverId}::text IS NULL OR c.server_id = ${serverId})
       ORDER BY c.created_at DESC
@@ -2086,6 +3301,63 @@ export class PostgresStore implements AppStore {
     return joined
   }
 
+  private async createSystemUserTx(tx: SQL, kind: "bot" | "webhook", name: string): Promise<string> {
+    const id = createId("usr")
+    const suffix = crypto.randomUUID().replace(/-/g, "").slice(0, 10)
+    const username = `${kind}_${suffix}`
+    const displayName = name.trim() || `${kind} ${suffix.slice(0, 6)}`
+    const createdAt = new Date().toISOString()
+
+    await tx`
+      INSERT INTO users (
+        id,
+        email,
+        username,
+        display_name,
+        password_hash,
+        is_system,
+        created_at
+      )
+      VALUES (
+        ${id},
+        ${`${username}@system.mango.local`},
+        ${username},
+        ${displayName},
+        ${createId("pwd")},
+        TRUE,
+        ${createdAt}
+      )
+    `
+
+    return id
+  }
+
+  private async ensureServerMemberWithDefaultRoleTx(tx: SQL, serverId: string, userId: string): Promise<void> {
+    await tx`
+      INSERT INTO server_members (server_id, user_id)
+      VALUES (${serverId}, ${userId})
+      ON CONFLICT (server_id, user_id) DO NOTHING
+    `
+
+    const defaultRoleRows = await tx<{ id: string }[]>`
+      SELECT id
+      FROM roles
+      WHERE server_id = ${serverId}
+        AND is_default = TRUE
+      LIMIT 1
+    `
+
+    if (!defaultRoleRows[0]?.id) {
+      return
+    }
+
+    await tx`
+      INSERT INTO member_roles (server_id, user_id, role_id)
+      VALUES (${serverId}, ${userId}, ${defaultRoleRows[0].id})
+      ON CONFLICT (server_id, user_id, role_id) DO NOTHING
+    `
+  }
+
   private async deleteServerConversationReadMarkers(serverId: string, sql: SQL = this.sql): Promise<void> {
     const channelRows = await sql<{ id: string }[]>`
       SELECT id
@@ -2099,11 +3371,20 @@ export class PostgresStore implements AppStore {
       WHERE server_id = ${serverId}
     `
 
+    const forumThreadRows = await sql<{ id: string }[]>`
+      SELECT id
+      FROM forum_threads
+      WHERE server_id = ${serverId}
+    `
+
     const conversationIds = new Set<string>()
     for (const row of channelRows) {
       conversationIds.add(row.id)
     }
     for (const row of threadRows) {
+      conversationIds.add(row.id)
+    }
+    for (const row of forumThreadRows) {
       conversationIds.add(row.id)
     }
 
@@ -2132,11 +3413,20 @@ export class PostgresStore implements AppStore {
       WHERE server_id = ${serverId}
     `
 
+    const forumThreadRows = await sql<{ id: string }[]>`
+      SELECT id
+      FROM forum_threads
+      WHERE server_id = ${serverId}
+    `
+
     const conversationIds = new Set<string>()
     for (const row of channelRows) {
       conversationIds.add(row.id)
     }
     for (const row of threadRows) {
+      conversationIds.add(row.id)
+    }
+    for (const row of forumThreadRows) {
       conversationIds.add(row.id)
     }
 

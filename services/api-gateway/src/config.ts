@@ -17,3 +17,4 @@ export const preferPresenceServiceProxy = process.env.PREFER_PRESENCE_SERVICE_PR
 export const voiceSignalingServiceUrl = process.env.VOICE_SIGNALING_SERVICE_URL ?? "http://localhost:4003"
 export const preferVoiceSignalingProxy = process.env.PREFER_VOICE_SIGNALING_PROXY !== "false"
 export const enableScreenShare = process.env.ENABLE_SCREEN_SHARE === "true"
+export const adminApiKey = process.env.ADMIN_API_KEY ?? ""

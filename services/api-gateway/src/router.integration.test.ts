@@ -1,16 +1,20 @@
 import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from "bun:test"
 import type {
+  AdminAnalyticsOverview,
   AuditLogEntry,
   AddReactionRequest,
   Attachment,
   AuthResponse,
   Channel,
   ChannelPermissionOverwrite,
+  CreatedServerBot,
+  CreatedWebhook,
   CreateMessageRequest,
   CreateModerationActionRequest,
   CreateRoleRequest,
   CreateServerRequest,
   DirectThread,
+  ForumThread,
   FriendRequest,
   Message,
   ModerationAction,
@@ -18,6 +22,8 @@ import type {
   PushSubscription,
   ReadMarker,
   Role,
+  SafetyAppeal,
+  SafetyReport,
   SearchResults,
   Server,
   ServerInvite,
@@ -92,7 +98,8 @@ const originalEnv = {
   PREFER_PRESENCE_SERVICE_PROXY: process.env.PREFER_PRESENCE_SERVICE_PROXY,
   PREFER_VOICE_SIGNALING_PROXY: process.env.PREFER_VOICE_SIGNALING_PROXY,
   ENABLE_SCREEN_SHARE: process.env.ENABLE_SCREEN_SHARE,
-  DISABLE_RATE_LIMITING: process.env.DISABLE_RATE_LIMITING
+  DISABLE_RATE_LIMITING: process.env.DISABLE_RATE_LIMITING,
+  ADMIN_API_KEY: process.env.ADMIN_API_KEY
 }
 
 function restoreEnv(): void {
@@ -135,11 +142,17 @@ async function callGateway<T>(params: {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
   path: string
   token?: string
+  headers?: Record<string, string>
   body?: unknown
 }): Promise<{ status: number; body: T }> {
   const headers = new Headers()
   if (params.token) {
     headers.set("Authorization", `Bearer ${params.token}`)
+  }
+  if (params.headers) {
+    for (const [key, value] of Object.entries(params.headers)) {
+      headers.set(key, value)
+    }
   }
   if (params.body !== undefined) {
     headers.set("Content-Type", "application/json")
@@ -552,6 +565,7 @@ describe("api-gateway proxy integration", () => {
     process.env.PREFER_VOICE_SIGNALING_PROXY = "true"
     process.env.ENABLE_SCREEN_SHARE = "true"
     process.env.DISABLE_RATE_LIMITING = "true"
+    process.env.ADMIN_API_KEY = "test-admin-key"
 
     const gatewayModule = await import("./router")
     routeGatewayRequest = gatewayModule.routeRequest as GatewayRouteFn
@@ -1191,6 +1205,284 @@ describe("api-gateway proxy integration", () => {
 
     expect(listedAfterDelete.status).toBe(200)
     expect(listedAfterDelete.body.some((item) => item.id === created.body.id)).toBe(false)
+  })
+
+  it("supports forum threads plus webhook and bot starter APIs", async () => {
+    const owner = await registerUser("rel4owner")
+    const bootstrap = await bootstrapServerAndChannel(owner.token, "rel4")
+
+    const createdThread = await callGateway<{ thread: ForumThread; starterMessage: Message }>({
+      method: "POST",
+      path: `/v1/channels/${bootstrap.channel.id}/threads`,
+      token: owner.token,
+      body: {
+        title: "Launch Notes",
+        body: "Initial forum thread message",
+        tags: ["release", "ops"]
+      }
+    })
+
+    expect(createdThread.status).toBe(201)
+    expect(createdThread.body.thread.parentChannelId).toBe(bootstrap.channel.id)
+    expect(createdThread.body.starterMessage.channelId).toBe(createdThread.body.thread.threadChannelId)
+
+    const listedThreads = await callGateway<ForumThread[]>({
+      method: "GET",
+      path: `/v1/channels/${bootstrap.channel.id}/threads`,
+      token: owner.token
+    })
+
+    expect(listedThreads.status).toBe(200)
+    expect(listedThreads.body.some((thread) => thread.id === createdThread.body.thread.id)).toBe(true)
+
+    const threadReply = await callGateway<Message>({
+      method: "POST",
+      path: `/v1/threads/${createdThread.body.thread.id}/messages`,
+      token: owner.token,
+      body: {
+        body: "Second post in thread"
+      }
+    })
+
+    expect(threadReply.status).toBe(201)
+    expect(threadReply.body.channelId).toBe(createdThread.body.thread.threadChannelId)
+
+    const createdWebhook = await callGateway<CreatedWebhook>({
+      method: "POST",
+      path: `/v1/channels/${bootstrap.channel.id}/webhooks`,
+      token: owner.token,
+      body: {
+        name: "CI Hook"
+      }
+    })
+
+    expect(createdWebhook.status).toBe(201)
+    expect(createdWebhook.body.webhook.channelId).toBe(bootstrap.channel.id)
+    expect(createdWebhook.body.token.length).toBeGreaterThan(10)
+
+    const webhookMessage = await callGateway<Message>({
+      method: "POST",
+      path: `/v1/webhooks/${createdWebhook.body.webhook.id}/${encodeURIComponent(createdWebhook.body.token)}`,
+      body: {
+        body: "build green"
+      }
+    })
+
+    expect(webhookMessage.status).toBe(201)
+    expect(webhookMessage.body.channelId).toBe(bootstrap.channel.id)
+
+    const createdBot = await callGateway<CreatedServerBot>({
+      method: "POST",
+      path: `/v1/servers/${bootstrap.server.id}/bots`,
+      token: owner.token,
+      body: {
+        name: "Release Bot"
+      }
+    })
+
+    expect(createdBot.status).toBe(201)
+    expect(createdBot.body.bot.serverId).toBe(bootstrap.server.id)
+
+    const botMessage = await callGateway<Message>({
+      method: "POST",
+      path: "/v1/bot/messages",
+      headers: {
+        Authorization: `Bot ${createdBot.body.token}`
+      },
+      body: {
+        channelId: bootstrap.channel.id,
+        body: "bot hello"
+      }
+    })
+
+    expect(botMessage.status).toBe(201)
+
+    const rotatedBot = await callGateway<CreatedServerBot>({
+      method: "POST",
+      path: `/v1/servers/${bootstrap.server.id}/bots/${createdBot.body.bot.id}/rotate-token`,
+      token: owner.token,
+      body: {}
+    })
+
+    expect(rotatedBot.status).toBe(200)
+    expect(rotatedBot.body.token).not.toBe(createdBot.body.token)
+
+    const oldTokenSend = await callGateway<{ error: string }>({
+      method: "POST",
+      path: "/v1/bot/messages",
+      headers: {
+        Authorization: `Bot ${createdBot.body.token}`
+      },
+      body: {
+        channelId: bootstrap.channel.id,
+        body: "old token should fail"
+      }
+    })
+
+    expect(oldTokenSend.status).toBe(403)
+
+    const newTokenSend = await callGateway<Message>({
+      method: "POST",
+      path: "/v1/bot/messages",
+      headers: {
+        Authorization: `Bot ${rotatedBot.body.token}`
+      },
+      body: {
+        channelId: bootstrap.channel.id,
+        body: "new token works"
+      }
+    })
+
+    expect(newTokenSend.status).toBe(201)
+
+    const revokedBot = await callGateway<{ revokedAt: string | null }>({
+      method: "POST",
+      path: `/v1/servers/${bootstrap.server.id}/bots/${createdBot.body.bot.id}/revoke`,
+      token: owner.token,
+      body: {}
+    })
+
+    expect(revokedBot.status).toBe(200)
+    expect(revokedBot.body.revokedAt).toBeTruthy()
+
+    const revokedTokenSend = await callGateway<{ error: string }>({
+      method: "POST",
+      path: "/v1/bot/messages",
+      headers: {
+        Authorization: `Bot ${rotatedBot.body.token}`
+      },
+      body: {
+        channelId: bootstrap.channel.id,
+        body: "revoked token should fail"
+      }
+    })
+
+    expect(revokedTokenSend.status).toBe(403)
+  })
+
+  it("supports trust and safety workflows plus admin analytics", async () => {
+    const owner = await registerUser("safetyowner")
+    const reporter = await registerUser("safetyreporter")
+
+    const bootstrap = await bootstrapServerAndChannel(owner.token, "safety")
+
+    const invite = await callGateway<ServerInvite>({
+      method: "POST",
+      path: `/v1/servers/${bootstrap.server.id}/invites`,
+      token: owner.token,
+      body: {}
+    })
+    expect(invite.status).toBe(201)
+
+    const joined = await callGateway<Server>({
+      method: "POST",
+      path: `/v1/invites/${invite.body.code}/join`,
+      token: reporter.token
+    })
+    expect(joined.status).toBe(200)
+
+    const message = await callGateway<Message>({
+      method: "POST",
+      path: `/v1/channels/${bootstrap.channel.id}/messages`,
+      token: reporter.token,
+      body: {
+        body: "message to report"
+      }
+    })
+    expect(message.status).toBe(201)
+
+    const createdReport = await callGateway<SafetyReport>({
+      method: "POST",
+      path: "/v1/safety/reports",
+      token: reporter.token,
+      body: {
+        serverId: bootstrap.server.id,
+        targetType: "message",
+        targetId: message.body.id,
+        reasonCode: "abuse",
+        details: "Report details"
+      }
+    })
+
+    expect(createdReport.status).toBe(201)
+    expect(createdReport.body.status).toBe("open")
+
+    const listedReports = await callGateway<SafetyReport[]>({
+      method: "GET",
+      path: `/v1/safety/reports?serverId=${encodeURIComponent(bootstrap.server.id)}`,
+      token: owner.token
+    })
+
+    expect(listedReports.status).toBe(200)
+    expect(listedReports.body.some((report) => report.id === createdReport.body.id)).toBe(true)
+
+    const updatedReport = await callGateway<SafetyReport>({
+      method: "PATCH",
+      path: `/v1/safety/reports/${createdReport.body.id}`,
+      token: owner.token,
+      body: {
+        status: "in_review",
+        resolutionNote: "Investigating"
+      }
+    })
+
+    expect(updatedReport.status).toBe(200)
+    expect(updatedReport.body.status).toBe("in_review")
+
+    const createdAppeal = await callGateway<SafetyAppeal>({
+      method: "POST",
+      path: `/v1/safety/reports/${createdReport.body.id}/appeals`,
+      token: reporter.token,
+      body: {
+        body: "Please review this again."
+      }
+    })
+
+    expect(createdAppeal.status).toBe(201)
+    expect(createdAppeal.body.reportId).toBe(createdReport.body.id)
+
+    const listedAppeals = await callGateway<SafetyAppeal[]>({
+      method: "GET",
+      path: `/v1/safety/appeals?reportId=${encodeURIComponent(createdReport.body.id)}`,
+      token: owner.token
+    })
+
+    expect(listedAppeals.status).toBe(200)
+    expect(listedAppeals.body.some((appeal) => appeal.id === createdAppeal.body.id)).toBe(true)
+
+    const resolvedAppeal = await callGateway<SafetyAppeal>({
+      method: "PATCH",
+      path: `/v1/safety/appeals/${createdAppeal.body.id}`,
+      token: owner.token,
+      body: {
+        status: "accepted",
+        resolutionNote: "Accepted after review."
+      }
+    })
+
+    expect(resolvedAppeal.status).toBe(200)
+    expect(resolvedAppeal.body.status).toBe("accepted")
+
+    const analyticsWithoutAdmin = await callGateway<{ error: string }>({
+      method: "GET",
+      path: "/v1/admin/analytics/overview?days=30",
+      token: owner.token
+    })
+
+    expect(analyticsWithoutAdmin.status).toBe(403)
+
+    const analyticsWithAdmin = await callGateway<AdminAnalyticsOverview>({
+      method: "GET",
+      path: "/v1/admin/analytics/overview?days=30",
+      headers: {
+        "X-Admin-Key": "test-admin-key"
+      }
+    })
+
+    expect(analyticsWithAdmin.status).toBe(200)
+    expect(analyticsWithAdmin.body.totals.users).toBeGreaterThanOrEqual(2)
+    expect(analyticsWithAdmin.body.totals.messages).toBeGreaterThanOrEqual(1)
+    expect(analyticsWithAdmin.body.safety.inReviewReports).toBeGreaterThanOrEqual(1)
   })
 
   it("supports moderation actions with audit logs and ban enforcement", async () => {

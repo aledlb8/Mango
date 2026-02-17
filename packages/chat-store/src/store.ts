@@ -1,9 +1,13 @@
 import type {
+  AdminAnalyticsOverview,
   AuditLogEntry,
   Attachment,
   Channel,
   ChannelPermissionOverwrite,
+  CreatedServerBot,
+  CreatedWebhook,
   DirectThread,
+  ForumThread,
   FriendRequest,
   MessageDeletedEvent,
   MessageReactionSummary,
@@ -14,11 +18,18 @@ import type {
   PushSubscription,
   ReadMarker,
   Role,
+  SafetyAppeal,
+  SafetyAppealStatus,
+  SafetyReport,
+  SafetyReportStatus,
+  SafetyReportTargetType,
   SearchResults,
   SearchScope,
+  ServerBot,
   ServerInvite,
   Server,
-  User
+  User,
+  Webhook
 } from "@mango/contracts"
 
 export type StoredUser = User & {
@@ -26,6 +37,54 @@ export type StoredUser = User & {
 }
 
 export type StoreKind = "memory" | "postgres"
+
+export type CreateForumThreadInput = {
+  parentChannelId: string
+  ownerId: string
+  title: string
+  body: string
+  attachments: Attachment[]
+  tags: string[]
+}
+
+export type UpdateForumThreadInput = {
+  title: string | null
+  tags: string[] | null
+  status: "open" | "archived" | null
+}
+
+export type CreateSafetyReportInput = {
+  serverId: string | null
+  reporterUserId: string
+  targetType: SafetyReportTargetType
+  targetId: string
+  reasonCode: string
+  details: string | null
+}
+
+export type ListSafetyReportsOptions = {
+  serverId: string | null
+  status: SafetyReportStatus | null
+  limit: number
+}
+
+export type UpdateSafetyReportInput = {
+  status: SafetyReportStatus
+  assignedModeratorId: string | null
+  resolutionNote: string | null
+}
+
+export type ListSafetyAppealsOptions = {
+  reportId: string | null
+  status: SafetyAppealStatus | null
+  limit: number
+}
+
+export type UpdateSafetyAppealInput = {
+  status: SafetyAppealStatus
+  reviewerUserId: string | null
+  resolutionNote: string | null
+}
 
 export interface AppStore {
   readonly kind: StoreKind
@@ -54,6 +113,10 @@ export interface AppStore {
   getDirectThreadByChannelId(channelId: string): Promise<DirectThread | null>
   isDirectThreadParticipant(threadId: string, userId: string): Promise<boolean>
   leaveDirectThread(threadId: string, userId: string): Promise<boolean>
+  createForumThread(input: CreateForumThreadInput): Promise<{ thread: ForumThread; starterMessage: Message }>
+  listForumThreads(parentChannelId: string, includeArchived: boolean): Promise<ForumThread[]>
+  getForumThreadById(threadId: string): Promise<ForumThread | null>
+  updateForumThread(threadId: string, input: UpdateForumThreadInput): Promise<ForumThread | null>
 
   createServer(name: string, ownerId: string): Promise<Server>
   listServersForUser(userId: string): Promise<Server[]>
@@ -131,6 +194,24 @@ export interface AppStore {
   listPushSubscriptions(userId: string): Promise<PushSubscription[]>
   deletePushSubscription(userId: string, subscriptionId: string): Promise<boolean>
   enqueueNotification(userId: string, title: string, body: string, url: string | null): Promise<void>
+  createWebhook(channelId: string, createdBy: string, name: string): Promise<CreatedWebhook>
+  listWebhooks(channelId: string): Promise<Webhook[]>
+  deleteWebhook(webhookId: string): Promise<boolean>
+  executeWebhook(webhookId: string, token: string, body: string, attachments: Attachment[]): Promise<Message | null>
+  createServerBot(serverId: string, createdBy: string, name: string): Promise<CreatedServerBot>
+  listServerBots(serverId: string): Promise<ServerBot[]>
+  revokeServerBot(serverId: string, botId: string): Promise<ServerBot | null>
+  rotateServerBotToken(serverId: string, botId: string): Promise<CreatedServerBot | null>
+  executeBotMessage(token: string, channelId: string, body: string, attachments: Attachment[]): Promise<Message | null>
+  createSafetyReport(input: CreateSafetyReportInput): Promise<SafetyReport>
+  listSafetyReports(options: ListSafetyReportsOptions): Promise<SafetyReport[]>
+  getSafetyReportById(reportId: string): Promise<SafetyReport | null>
+  updateSafetyReport(reportId: string, input: UpdateSafetyReportInput): Promise<SafetyReport | null>
+  createSafetyAppeal(reportId: string, appellantUserId: string, body: string): Promise<SafetyAppeal>
+  listSafetyAppeals(options: ListSafetyAppealsOptions): Promise<SafetyAppeal[]>
+  getSafetyAppealById(appealId: string): Promise<SafetyAppeal | null>
+  updateSafetyAppeal(appealId: string, input: UpdateSafetyAppealInput): Promise<SafetyAppeal | null>
+  getAdminAnalyticsOverview(rangeDays: number): Promise<AdminAnalyticsOverview>
 
   searchChannels(query: string, userId: string, serverId: string | null, limit: number): Promise<Channel[]>
   searchMessages(query: string, userId: string, serverId: string | null, limit: number): Promise<Message[]>

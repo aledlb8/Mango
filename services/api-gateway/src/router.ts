@@ -20,6 +20,7 @@ import {
   preferPresenceServiceProxy,
   preferVoiceSignalingProxy
 } from "./config"
+import { handleGetAdminAnalyticsOverview } from "./handlers/admin-analytics"
 import { handleGetMe, handleLogin, handleRegister } from "./handlers/auth"
 import {
   handleCreateChannel,
@@ -34,6 +35,14 @@ import {
   handleListDirectThreadMessages,
   handleListDirectThreads
 } from "./handlers/direct-threads"
+import {
+  handleCreateForumThread,
+  handleCreateForumThreadMessage,
+  handleGetForumThread,
+  handleListForumThreadMessages,
+  handleListForumThreads,
+  handleUpdateForumThread
+} from "./handlers/forum-threads"
 import { handleCreateServerInvite, handleJoinServerInvite } from "./handlers/invites"
 import { handleCreateModerationAction, handleListAuditLogs } from "./handlers/moderation"
 import {
@@ -74,6 +83,14 @@ import {
   handleSearchUsers
 } from "./handlers/social"
 import {
+  handleCreateSafetyAppeal,
+  handleCreateSafetyReport,
+  handleListSafetyAppeals,
+  handleListSafetyReports,
+  handleUpdateSafetyAppeal,
+  handleUpdateSafetyReport
+} from "./handlers/safety"
+import {
   handleCreateServer,
   handleDeleteServer,
   handleLeaveServer,
@@ -81,6 +98,16 @@ import {
 } from "./handlers/servers"
 import { handleSearch } from "./handlers/search"
 import { handleChannelTyping, handleDirectThreadTyping } from "./handlers/typing"
+import {
+  handleCreateChannelWebhook,
+  handleCreateServerBot,
+  handleExecuteBotMessage,
+  handleExecuteWebhook,
+  handleListChannelWebhooks,
+  handleListServerBots,
+  handleRevokeServerBot,
+  handleRotateServerBotToken
+} from "./handlers/webhooks-bots"
 import {
   handleDirectThreadCallHeartbeat,
   handleDirectThreadCallScreenShare,
@@ -113,11 +140,26 @@ const directThreadLeaveRoute = /^\/v1\/direct-threads\/([^/]+)\/participants\/@m
 const directThreadMessagesRoute = /^\/v1\/direct-threads\/([^/]+)\/messages$/
 const directThreadReadMarkerRoute = /^\/v1\/direct-threads\/([^/]+)\/read-marker$/
 const directThreadTypingRoute = /^\/v1\/direct-threads\/([^/]+)\/typing$/
+const channelThreadsRoute = /^\/v1\/channels\/([^/]+)\/threads$/
+const threadRoute = /^\/v1\/threads\/([^/]+)$/
+const threadMessagesRoute = /^\/v1\/threads\/([^/]+)\/messages$/
 const channelMessagesRoute = /^\/v1\/channels\/([^/]+)\/messages$/
 const channelReadMarkerRoute = /^\/v1\/channels\/([^/]+)\/read-marker$/
 const channelTypingRoute = /^\/v1\/channels\/([^/]+)\/typing$/
 const channelOverwritesRoute = /^\/v1\/channels\/([^/]+)\/overwrites$/
+const channelWebhooksRoute = /^\/v1\/channels\/([^/]+)\/webhooks$/
 const channelRoute = /^\/v1\/channels\/([^/]+)$/
+const webhookExecuteRoute = /^\/v1\/webhooks\/([^/]+)\/([^/]+)$/
+const serverBotsRoute = /^\/v1\/servers\/([^/]+)\/bots$/
+const serverBotRevokeRoute = /^\/v1\/servers\/([^/]+)\/bots\/([^/]+)\/revoke$/
+const serverBotRotateTokenRoute = /^\/v1\/servers\/([^/]+)\/bots\/([^/]+)\/rotate-token$/
+const botMessagesRoute = /^\/v1\/bot\/messages$/
+const safetyReportsRoute = /^\/v1\/safety\/reports$/
+const safetyReportRoute = /^\/v1\/safety\/reports\/([^/]+)$/
+const safetyReportAppealsRoute = /^\/v1\/safety\/reports\/([^/]+)\/appeals$/
+const safetyAppealsRoute = /^\/v1\/safety\/appeals$/
+const safetyAppealRoute = /^\/v1\/safety\/appeals\/([^/]+)$/
+const adminAnalyticsOverviewRoute = /^\/v1\/admin\/analytics\/overview$/
 const voiceChannelSessionRoute = /^\/v1\/voice\/channels\/([^/]+)$/
 const voiceChannelJoinRoute = /^\/v1\/voice\/channels\/([^/]+)\/join$/
 const voiceChannelLeaveRoute = /^\/v1\/voice\/channels\/([^/]+)\/leave$/
@@ -572,6 +614,37 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
     return await handleSearch(request, ctx)
   }
 
+  if (adminAnalyticsOverviewRoute.test(pathname) && request.method === "GET") {
+    return await handleGetAdminAnalyticsOverview(request, ctx)
+  }
+
+  if (safetyReportsRoute.test(pathname) && request.method === "POST") {
+    return await handleCreateSafetyReport(request, ctx)
+  }
+
+  if (safetyReportsRoute.test(pathname) && request.method === "GET") {
+    return await handleListSafetyReports(request, ctx)
+  }
+
+  const safetyReportMatch = pathname.match(safetyReportRoute)
+  if (safetyReportMatch?.[1] && request.method === "PATCH") {
+    return await handleUpdateSafetyReport(request, safetyReportMatch[1], ctx)
+  }
+
+  const safetyReportAppealsMatch = pathname.match(safetyReportAppealsRoute)
+  if (safetyReportAppealsMatch?.[1] && request.method === "POST") {
+    return await handleCreateSafetyAppeal(request, safetyReportAppealsMatch[1], ctx)
+  }
+
+  if (safetyAppealsRoute.test(pathname) && request.method === "GET") {
+    return await handleListSafetyAppeals(request, ctx)
+  }
+
+  const safetyAppealMatch = pathname.match(safetyAppealRoute)
+  if (safetyAppealMatch?.[1] && request.method === "PATCH") {
+    return await handleUpdateSafetyAppeal(request, safetyAppealMatch[1], ctx)
+  }
+
   if (pushSubscriptionsRoute.test(pathname) && request.method === "POST") {
     return await handleCreatePushSubscription(request, ctx)
   }
@@ -668,6 +741,30 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       }
     }
     return await handleCreateServerInvite(request, serverInvitesMatch[1], ctx)
+  }
+
+  const serverBotsMatch = pathname.match(serverBotsRoute)
+  if (serverBotsMatch?.[1] && request.method === "POST") {
+    return await handleCreateServerBot(request, serverBotsMatch[1], ctx)
+  }
+
+  if (serverBotsMatch?.[1] && request.method === "GET") {
+    return await handleListServerBots(request, serverBotsMatch[1], ctx)
+  }
+
+  const serverBotRevokeMatch = pathname.match(serverBotRevokeRoute)
+  if (serverBotRevokeMatch?.[1] && serverBotRevokeMatch?.[2] && request.method === "POST") {
+    return await handleRevokeServerBot(request, serverBotRevokeMatch[1], serverBotRevokeMatch[2], ctx)
+  }
+
+  const serverBotRotateTokenMatch = pathname.match(serverBotRotateTokenRoute)
+  if (serverBotRotateTokenMatch?.[1] && serverBotRotateTokenMatch?.[2] && request.method === "POST") {
+    return await handleRotateServerBotToken(
+      request,
+      serverBotRotateTokenMatch[1],
+      serverBotRotateTokenMatch[2],
+      ctx
+    )
   }
 
   const serverModerationActionsMatch = pathname.match(serverModerationActionsRoute)
@@ -777,6 +874,58 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       }
     }
     return await handleDirectThreadTyping(request, directThreadTypingMatch[1], ctx)
+  }
+
+  const channelThreadsMatch = pathname.match(channelThreadsRoute)
+  if (channelThreadsMatch?.[1] && request.method === "POST") {
+    return await handleCreateForumThread(request, channelThreadsMatch[1], ctx)
+  }
+
+  if (channelThreadsMatch?.[1] && request.method === "GET") {
+    return await handleListForumThreads(request, channelThreadsMatch[1], ctx)
+  }
+
+  const threadMatch = pathname.match(threadRoute)
+  if (threadMatch?.[1] && request.method === "GET") {
+    return await handleGetForumThread(request, threadMatch[1], ctx)
+  }
+
+  if (threadMatch?.[1] && request.method === "PATCH") {
+    return await handleUpdateForumThread(request, threadMatch[1], ctx)
+  }
+
+  const threadMessagesMatch = pathname.match(threadMessagesRoute)
+  if (threadMessagesMatch?.[1] && request.method === "POST") {
+    return await handleCreateForumThreadMessage(request, threadMessagesMatch[1], ctx)
+  }
+
+  if (threadMessagesMatch?.[1] && request.method === "GET") {
+    return await handleListForumThreadMessages(request, threadMessagesMatch[1], ctx)
+  }
+
+  const channelWebhooksMatch = pathname.match(channelWebhooksRoute)
+  if (channelWebhooksMatch?.[1] && request.method === "POST") {
+    return await handleCreateChannelWebhook(request, channelWebhooksMatch[1], ctx)
+  }
+
+  if (channelWebhooksMatch?.[1] && request.method === "GET") {
+    return await handleListChannelWebhooks(request, channelWebhooksMatch[1], ctx)
+  }
+
+  const webhookExecuteMatch = pathname.match(webhookExecuteRoute)
+  if (webhookExecuteMatch?.[1] && webhookExecuteMatch?.[2] && request.method === "POST") {
+    let token = webhookExecuteMatch[2]
+    try {
+      token = decodeURIComponent(token)
+    } catch {
+      return error(ctx.corsOrigin, 400, "Invalid webhook token path segment.")
+    }
+
+    return await handleExecuteWebhook(request, webhookExecuteMatch[1], token, ctx)
+  }
+
+  if (botMessagesRoute.test(pathname) && request.method === "POST") {
+    return await handleExecuteBotMessage(request, ctx)
   }
 
   const channelMessagesMatch = pathname.match(channelMessagesRoute)
@@ -1050,6 +1199,13 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       "POST /v1/friends/requests",
       "POST /v1/friends/requests/:requestId",
       "GET /v1/search?q=term",
+      "GET /v1/admin/analytics/overview?days=30",
+      "POST /v1/safety/reports",
+      "GET /v1/safety/reports",
+      "PATCH /v1/safety/reports/:reportId",
+      "POST /v1/safety/reports/:reportId/appeals",
+      "GET /v1/safety/appeals",
+      "PATCH /v1/safety/appeals/:appealId",
       "POST /v1/notifications/push-subscriptions",
       "GET /v1/notifications/push-subscriptions",
       "DELETE /v1/notifications/push-subscriptions/:subscriptionId",
@@ -1065,6 +1221,10 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       "POST /v1/servers/:serverId/roles",
       "POST /v1/servers/:serverId/roles/assign",
       "POST /v1/servers/:serverId/invites",
+      "POST /v1/servers/:serverId/bots",
+      "GET /v1/servers/:serverId/bots",
+      "POST /v1/servers/:serverId/bots/:botId/revoke",
+      "POST /v1/servers/:serverId/bots/:botId/rotate-token",
       "POST /v1/servers/:serverId/moderation/actions",
       "GET /v1/servers/:serverId/audit-logs",
       "POST /v1/direct-threads",
@@ -1075,6 +1235,16 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       "GET /v1/direct-threads/:threadId/read-marker",
       "PUT /v1/direct-threads/:threadId/read-marker",
       "POST /v1/direct-threads/:threadId/typing",
+      "POST /v1/channels/:channelId/threads",
+      "GET /v1/channels/:channelId/threads",
+      "GET /v1/threads/:threadId",
+      "PATCH /v1/threads/:threadId",
+      "POST /v1/threads/:threadId/messages",
+      "GET /v1/threads/:threadId/messages",
+      "POST /v1/channels/:channelId/webhooks",
+      "GET /v1/channels/:channelId/webhooks",
+      "POST /v1/webhooks/:webhookId/:token",
+      "POST /v1/bot/messages",
       "POST /v1/channels/:channelId/messages",
       "GET /v1/channels/:channelId/messages",
       "GET /v1/channels/:channelId/read-marker",

@@ -111,6 +111,58 @@ export type DirectThread = {
   updatedAt: string;
 };
 
+export type ForumThreadStatus = "open" | "archived";
+
+export type ForumThread = {
+  id: string;
+  serverId: string;
+  parentChannelId: string;
+  threadChannelId: string;
+  title: string;
+  ownerId: string;
+  tags: string[];
+  status: ForumThreadStatus;
+  createdAt: string;
+  updatedAt: string;
+  lastMessageAt: string | null;
+};
+
+export type Webhook = {
+  id: string;
+  serverId: string;
+  channelId: string;
+  createdBy: string;
+  name: string;
+  tokenHint: string;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string | null;
+  disabledAt: string | null;
+};
+
+export type CreatedWebhook = {
+  webhook: Webhook;
+  token: string;
+};
+
+export type ServerBot = {
+  id: string;
+  serverId: string;
+  userId: string;
+  createdBy: string;
+  name: string;
+  tokenHint: string;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+};
+
+export type CreatedServerBot = {
+  bot: ServerBot;
+  token: string;
+};
+
 export type Permission =
   | "manage_server"
   | "manage_channels"
@@ -259,6 +311,71 @@ export type ModerationAction = {
   createdAt: string;
 };
 
+export type SafetyReportTargetType = "message" | "user" | "channel" | "server";
+export type SafetyReportStatus = "open" | "in_review" | "resolved" | "dismissed";
+
+export type SafetyReport = {
+  id: string;
+  serverId: string | null;
+  reporterUserId: string;
+  targetType: SafetyReportTargetType;
+  targetId: string;
+  reasonCode: string;
+  details: string | null;
+  status: SafetyReportStatus;
+  assignedModeratorId: string | null;
+  resolutionNote: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+};
+
+export type SafetyAppealStatus = "open" | "accepted" | "rejected";
+
+export type SafetyAppeal = {
+  id: string;
+  reportId: string;
+  appellantUserId: string;
+  body: string;
+  status: SafetyAppealStatus;
+  reviewerUserId: string | null;
+  resolutionNote: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+};
+
+export type AdminAnalyticsTopServer = {
+  serverId: string;
+  serverName: string;
+  messageCount: number;
+};
+
+export type AdminAnalyticsOverview = {
+  generatedAt: string;
+  rangeDays: number;
+  totals: {
+    users: number;
+    servers: number;
+    channels: number;
+    messages: number;
+    forumThreads: number;
+    webhooks: number;
+    bots: number;
+  };
+  activeUsers: {
+    day1: number;
+    day7: number;
+    day30: number;
+  };
+  safety: {
+    openReports: number;
+    inReviewReports: number;
+    openAppeals: number;
+  };
+  topServersByMessages: AdminAnalyticsTopServer[];
+};
+
 export type CreateModerationActionRequest = {
   targetUserId: string;
   actionType: ModerationActionType;
@@ -329,6 +446,62 @@ export type UpdateMessageRequest = {
 export type CreateDirectThreadRequest = {
   participantIds: string[];
   title?: string;
+};
+
+export type CreateForumThreadRequest = {
+  title: string;
+  body: string;
+  tags?: string[];
+  attachments?: Attachment[];
+};
+
+export type UpdateForumThreadRequest = {
+  title?: string;
+  tags?: string[];
+  status?: ForumThreadStatus;
+};
+
+export type CreateWebhookRequest = {
+  name: string;
+};
+
+export type ExecuteWebhookRequest = {
+  body: string;
+  attachments?: Attachment[];
+};
+
+export type CreateServerBotRequest = {
+  name: string;
+};
+
+export type ExecuteBotMessageRequest = {
+  channelId: string;
+  body: string;
+  attachments?: Attachment[];
+};
+
+export type CreateSafetyReportRequest = {
+  serverId?: string;
+  targetType: SafetyReportTargetType;
+  targetId: string;
+  reasonCode: string;
+  details?: string;
+};
+
+export type UpdateSafetyReportRequest = {
+  status?: SafetyReportStatus;
+  assignedModeratorId?: string | null;
+  resolutionNote?: string | null;
+};
+
+export type CreateSafetyAppealRequest = {
+  body: string;
+};
+
+export type UpdateSafetyAppealRequest = {
+  status?: SafetyAppealStatus;
+  reviewerUserId?: string | null;
+  resolutionNote?: string | null;
 };
 
 export type UpdateReadMarkerRequest = {
