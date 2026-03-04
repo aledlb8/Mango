@@ -35,7 +35,12 @@ export type Device = {
 
 export type AuthResponse = {
   token: string;
+  refreshToken: string;
   user: User;
+};
+
+export type RefreshSessionRequest = {
+  refreshToken: string;
 };
 
 export type RegisterRequest = {

@@ -21,6 +21,8 @@ export const preferVoiceSignalingProxy = process.env.PREFER_VOICE_SIGNALING_PROX
 export const realtimeGatewayUrl = process.env.REALTIME_GATEWAY_URL ?? "http://localhost:4001"
 export const preferRealtimeGatewayFanout = process.env.PREFER_REALTIME_GATEWAY_FANOUT !== "false"
 export const realtimeGatewayInternalApiKey = process.env.REALTIME_GATEWAY_INTERNAL_API_KEY ?? ""
+export const accessTokenTtlSeconds = Math.max(60, Number(process.env.ACCESS_TOKEN_TTL_SECONDS ?? 60 * 15))
+export const refreshTokenTtlSeconds = Math.max(300, Number(process.env.REFRESH_TOKEN_TTL_SECONDS ?? 60 * 60 * 24 * 30))
 export const idempotencyKeyTtlSeconds = Math.max(
   60,
   Number(process.env.IDEMPOTENCY_KEY_TTL_SECONDS ?? 60 * 60 * 24)

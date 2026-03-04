@@ -1,9 +1,59 @@
-import type { AuthResponse, LoginRequest, RegisterRequest } from "@mango/contracts"
+import type {
+  AuthResponse,
+  LoginRequest,
+  RefreshSessionRequest,
+  RegisterRequest
+} from "@mango/contracts"
 import { getAuthenticatedUser } from "../auth/session"
+import { accessTokenTtlSeconds, refreshTokenTtlSeconds } from "../config"
 import { createId } from "../id"
 import { readJson } from "../http/request"
 import { error, json } from "../http/response"
 import type { IdentityRouteContext } from "../router-context"
+
+function toAuthResponse(
+  user: {
+    id: string
+    email: string
+    username: string
+    displayName: string
+    createdAt: string
+  },
+  token: string,
+  refreshToken: string
+): AuthResponse {
+  return {
+    token,
+    refreshToken,
+    user: {
+      id: user.id,
+      email: user.email,
+      username: user.username,
+      displayName: user.displayName,
+      createdAt: user.createdAt
+    }
+  }
+}
+
+async function issueSession(
+  request: Request,
+  userId: string,
+  ctx: IdentityRouteContext
+): Promise<{ token: string; refreshToken: string }> {
+  const token = createId("tok")
+  const refreshToken = createId("rtk")
+  const accessExpiresAt = new Date(Date.now() + accessTokenTtlSeconds * 1_000).toISOString()
+  const refreshExpiresAt = new Date(Date.now() + refreshTokenTtlSeconds * 1_000).toISOString()
+  const userAgent = request.headers.get("user-agent")?.trim() || null
+
+  await ctx.store.createSession(token, userId, accessExpiresAt)
+  await ctx.store.createRefreshSession(refreshToken, userId, refreshExpiresAt, userAgent)
+
+  return {
+    token,
+    refreshToken
+  }
+}
 
 export async function handleRegister(request: Request, ctx: IdentityRouteContext): Promise<Response> {
   const body = await readJson<RegisterRequest>(request)
@@ -48,21 +98,8 @@ export async function handleRegister(request: Request, ctx: IdentityRouteContext
 
   const passwordHash = await Bun.password.hash(password)
   const user = await ctx.store.createUser(email, username, displayName, passwordHash)
-  const token = createId("tok")
-  await ctx.store.createSession(token, user.id)
-
-  const response: AuthResponse = {
-    token,
-    user: {
-      id: user.id,
-      email: user.email,
-      username: user.username,
-      displayName: user.displayName,
-      createdAt: user.createdAt
-    }
-  }
-
-  return json(ctx.corsOrigin, 201, response)
+  const session = await issueSession(request, user.id, ctx)
+  return json(ctx.corsOrigin, 201, toAuthResponse(user, session.token, session.refreshToken))
 }
 
 export async function handleLogin(request: Request, ctx: IdentityRouteContext): Promise<Response> {
@@ -90,21 +127,33 @@ export async function handleLogin(request: Request, ctx: IdentityRouteContext): 
     return error(ctx.corsOrigin, 401, "Invalid credentials.")
   }
 
-  const token = createId("tok")
-  await ctx.store.createSession(token, user.id)
+  const session = await issueSession(request, user.id, ctx)
+  return json(ctx.corsOrigin, 200, toAuthResponse(user, session.token, session.refreshToken))
+}
 
-  const response: AuthResponse = {
-    token,
-    user: {
-      id: user.id,
-      email: user.email,
-      username: user.username,
-      displayName: user.displayName,
-      createdAt: user.createdAt
-    }
+export async function handleRefresh(request: Request, ctx: IdentityRouteContext): Promise<Response> {
+  const body = await readJson<RefreshSessionRequest>(request)
+  if (!body) {
+    return error(ctx.corsOrigin, 400, "Invalid JSON body.")
   }
 
-  return json(ctx.corsOrigin, 200, response)
+  const refreshToken = body.refreshToken?.trim()
+  if (!refreshToken) {
+    return error(ctx.corsOrigin, 400, "refreshToken is required.")
+  }
+
+  const userId = await ctx.store.consumeRefreshSession(refreshToken)
+  if (!userId) {
+    return error(ctx.corsOrigin, 401, "Invalid refresh token.")
+  }
+
+  const user = await ctx.store.findUserById(userId)
+  if (!user) {
+    return error(ctx.corsOrigin, 401, "Invalid refresh token.")
+  }
+
+  const session = await issueSession(request, user.id, ctx)
+  return json(ctx.corsOrigin, 200, toAuthResponse(user, session.token, session.refreshToken))
 }
 
 export async function handleGetMe(request: Request, ctx: IdentityRouteContext): Promise<Response> {

@@ -1,5 +1,5 @@
 import { createHealthResponse } from "@mango/contracts"
-import { handleGetMe, handleLogin, handleRegister } from "./handlers/auth"
+import { handleGetMe, handleLogin, handleRefresh, handleRegister } from "./handlers/auth"
 import {
   handleCreateFriendRequest,
   handleGetUserById,
@@ -38,6 +38,10 @@ export async function routeRequest(request: Request, ctx: IdentityRouteContext):
 
   if (pathname === "/v1/auth/login" && request.method === "POST") {
     return await handleLogin(request, ctx)
+  }
+
+  if (pathname === "/v1/auth/refresh" && request.method === "POST") {
+    return await handleRefresh(request, ctx)
   }
 
   if (pathname === "/v1/me" && request.method === "GET") {
@@ -86,6 +90,7 @@ export async function routeRequest(request: Request, ctx: IdentityRouteContext):
       "GET /health",
       "POST /v1/auth/register",
       "POST /v1/auth/login",
+      "POST /v1/auth/refresh",
       "GET /v1/me",
       "GET /v1/users/search?q=term",
       "GET /v1/users/:userId",

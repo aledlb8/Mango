@@ -3,7 +3,7 @@
 import { useState, type FormEvent } from "react"
 import { useRouter } from "next/navigation"
 import { ApiError, login, register } from "@/lib/api"
-import { setTokenCookie } from "@/lib/session-cookie"
+import { setSessionCookies } from "@/lib/session-cookie"
 import { AuthGate } from "@/features/chat-app/components"
 
 export function AuthPageClient() {
@@ -33,7 +33,7 @@ export function AuthPageClient() {
         password: registerPassword
       })
 
-      setTokenCookie(response.token)
+      setSessionCookies(response.token, response.refreshToken)
       router.replace("/friends")
     } catch (error) {
       if (error instanceof ApiError) {
@@ -57,7 +57,7 @@ export function AuthPageClient() {
         password: loginPassword
       })
 
-      setTokenCookie(response.token)
+      setSessionCookies(response.token, response.refreshToken)
       router.replace("/friends")
     } catch (error) {
       if (error instanceof ApiError) {

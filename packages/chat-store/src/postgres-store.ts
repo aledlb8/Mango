@@ -342,6 +342,10 @@ function tokenHint(token: string): string {
   return token.slice(0, 8)
 }
 
+function defaultSessionExpiryIso(): string {
+  return new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000).toISOString()
+}
+
 function mapUser(row: UserRow): StoredUser {
   return {
     id: row.id,
@@ -881,12 +885,15 @@ export class PostgresStore implements AppStore {
     return updated ? mapFriendRequest(updated) : null
   }
 
-  async createSession(token: string, userId: string): Promise<void> {
+  async createSession(token: string, userId: string, expiresAt: string = defaultSessionExpiryIso()): Promise<void> {
     const createdAt = new Date().toISOString()
     await this.sql`
-      INSERT INTO sessions (token, user_id, created_at)
-      VALUES (${token}, ${userId}, ${createdAt})
-      ON CONFLICT (token) DO UPDATE SET user_id = EXCLUDED.user_id
+      INSERT INTO sessions (token, user_id, created_at, expires_at)
+      VALUES (${token}, ${userId}, ${createdAt}, ${expiresAt})
+      ON CONFLICT (token)
+      DO UPDATE SET
+        user_id = EXCLUDED.user_id,
+        expires_at = EXCLUDED.expires_at
     `
   }
 
@@ -895,7 +902,33 @@ export class PostgresStore implements AppStore {
       SELECT user_id
       FROM sessions
       WHERE token = ${token}
+        AND expires_at > NOW()
       LIMIT 1
+    `
+    return rows[0]?.user_id ?? null
+  }
+
+  async createRefreshSession(
+    token: string,
+    userId: string,
+    expiresAt: string,
+    userAgent: string | null
+  ): Promise<void> {
+    const tokenHash = hashToken(token)
+    const createdAt = new Date().toISOString()
+    await this.sql`
+      INSERT INTO refresh_sessions (token_hash, user_id, user_agent, created_at, expires_at)
+      VALUES (${tokenHash}, ${userId}, ${userAgent}, ${createdAt}, ${expiresAt})
+    `
+  }
+
+  async consumeRefreshSession(token: string): Promise<string | null> {
+    const tokenHash = hashToken(token)
+    const rows = await this.sql<{ user_id: string }[]>`
+      DELETE FROM refresh_sessions
+      WHERE token_hash = ${tokenHash}
+        AND expires_at > NOW()
+      RETURNING user_id
     `
     return rows[0]?.user_id ?? null
   }

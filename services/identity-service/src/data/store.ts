@@ -13,8 +13,15 @@ export interface IdentityStore {
   findUserByUsername(username: string): Promise<StoredUser | null>
   findUserById(userId: string): Promise<StoredUser | null>
 
-  createSession(token: string, userId: string): Promise<void>
+  createSession(token: string, userId: string, expiresAt?: string): Promise<void>
   getUserIdByToken(token: string): Promise<string | null>
+  createRefreshSession(
+    token: string,
+    userId: string,
+    expiresAt: string,
+    userAgent: string | null
+  ): Promise<void>
+  consumeRefreshSession(token: string): Promise<string | null>
 
   searchUsers(query: string, excludeUserId: string): Promise<User[]>
   addFriend(userId: string, friendId: string): Promise<void>

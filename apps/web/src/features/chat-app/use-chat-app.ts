@@ -65,7 +65,7 @@ import {
   type User,
   type VoiceSession
 } from "@/lib/api"
-import { clearTokenCookie, getTokenFromCookie, setTokenCookie } from "@/lib/session-cookie"
+import { clearSessionCookies, getTokenFromCookie, setSessionCookies } from "@/lib/session-cookie"
 import { createRealtimeSocket, parseRealtimeServerMessage, type RealtimeStatus } from "@/lib/realtime"
 import {
   dedupeMessages,
@@ -530,7 +530,7 @@ export function useChatApp(route: ChatAppRoute, initialToken: string | null, ini
         setIsAuthInitializing(false)
       } catch (error) {
         if (error instanceof ApiError && error.status === 401) {
-          clearTokenCookie()
+          clearSessionCookies()
           clearCachedSession()
           setToken(null)
           setErrorMessage("Session expired. Please sign in again.")
@@ -1745,7 +1745,7 @@ export function useChatApp(route: ChatAppRoute, initialToken: string | null, ini
         displayName: registerDisplayName,
         password: registerPassword
       })
-      setTokenCookie(response.token)
+      setSessionCookies(response.token, response.refreshToken)
       setMe(response.user)
       writeCachedSession(response.token, response.user)
       setUsersById((current) => mergeUsersById(current, [response.user]))
@@ -1770,7 +1770,7 @@ export function useChatApp(route: ChatAppRoute, initialToken: string | null, ini
         identifier: loginIdentifier,
         password: loginPassword
       })
-      setTokenCookie(response.token)
+      setSessionCookies(response.token, response.refreshToken)
       setMe(response.user)
       writeCachedSession(response.token, response.user)
       setUsersById((current) => mergeUsersById(current, [response.user]))
@@ -1785,7 +1785,7 @@ export function useChatApp(route: ChatAppRoute, initialToken: string | null, ini
   }
 
   function handleSignOut() {
-    clearTokenCookie()
+    clearSessionCookies()
     clearCachedSession()
     setToken(null)
     setStatusMessage("Signed out.")

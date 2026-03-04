@@ -23,7 +23,7 @@ import {
 } from "./config"
 import { getAuthenticatedUser } from "./auth/session"
 import { handleGetAdminAnalyticsOverview } from "./handlers/admin-analytics"
-import { handleGetMe, handleLogin, handleRegister } from "./handlers/auth"
+import { handleGetMe, handleLogin, handleRefresh, handleRegister } from "./handlers/auth"
 import {
   handleCreateChannel,
   handleDeleteChannel,
@@ -245,6 +245,11 @@ async function proxyToService(
   const cookie = request.headers.get("cookie")
   if (cookie) {
     headers.Cookie = cookie
+  }
+
+  const userAgent = request.headers.get("user-agent")
+  if (userAgent) {
+    headers["User-Agent"] = userAgent
   }
 
   const idempotencyKey = request.headers.get("idempotency-key")
@@ -533,6 +538,16 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       }
     }
     return await handleLogin(request, ctx)
+  }
+
+  if (pathname === "/v1/auth/refresh" && request.method === "POST") {
+    if (shouldProxyIdentity(ctx)) {
+      const proxied = await proxyToService(identityServiceUrl, request, ctx)
+      if (proxied) {
+        return proxied
+      }
+    }
+    return await handleRefresh(request, ctx)
   }
 
   if (pathname === "/v1/me" && request.method === "GET") {
@@ -1264,6 +1279,7 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
       "POST /v1/attachments",
       "POST /v1/auth/register",
       "POST /v1/auth/login",
+      "POST /v1/auth/refresh",
       "GET /v1/me",
       "PUT /v1/presence",
       "GET /v1/presence/me",

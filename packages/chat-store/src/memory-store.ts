@@ -62,11 +62,23 @@ type StoredBot = ServerBot & {
   tokenHash: string
 }
 
+type StoredSession = {
+  userId: string
+  expiresAt: string
+}
+
+type StoredRefreshSession = {
+  userId: string
+  userAgent: string | null
+  expiresAt: string
+}
+
 type MemoryState = {
   usersById: Map<string, StoredUser>
   usersByEmail: Map<string, StoredUser>
   usersByUsername: Map<string, StoredUser>
-  sessionsByToken: Map<string, string>
+  sessionsByToken: Map<string, StoredSession>
+  refreshSessionsByToken: Map<string, StoredRefreshSession>
   systemUserIds: Set<string>
   directThreadsById: Map<string, DirectThread>
   directThreadIdsByUserId: Map<string, string[]>
@@ -115,7 +127,8 @@ function createMemoryState(): MemoryState {
     usersById: new Map<string, StoredUser>(),
     usersByEmail: new Map<string, StoredUser>(),
     usersByUsername: new Map<string, StoredUser>(),
-    sessionsByToken: new Map<string, string>(),
+    sessionsByToken: new Map<string, StoredSession>(),
+    refreshSessionsByToken: new Map<string, StoredRefreshSession>(),
     systemUserIds: new Set<string>(),
     directThreadsById: new Map<string, DirectThread>(),
     directThreadIdsByUserId: new Map<string, string[]>(),
@@ -162,6 +175,19 @@ function createMemoryState(): MemoryState {
 
 function memberRoleKey(serverId: string, userId: string): string {
   return `${serverId}:${userId}`
+}
+
+function defaultSessionExpiryIso(): string {
+  return new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000).toISOString()
+}
+
+function isExpired(atIso: string): boolean {
+  const atMs = Date.parse(atIso)
+  if (Number.isNaN(atMs)) {
+    return true
+  }
+
+  return atMs <= Date.now()
 }
 
 function toPublicUser(user: StoredUser): User {
@@ -446,12 +472,51 @@ export class MemoryStore implements AppStore {
     return friends
   }
 
-  async createSession(token: string, userId: string): Promise<void> {
-    this.state.sessionsByToken.set(token, userId)
+  async createSession(token: string, userId: string, expiresAt: string = defaultSessionExpiryIso()): Promise<void> {
+    this.state.sessionsByToken.set(token, {
+      userId,
+      expiresAt
+    })
   }
 
   async getUserIdByToken(token: string): Promise<string | null> {
-    return this.state.sessionsByToken.get(token) ?? null
+    const session = this.state.sessionsByToken.get(token)
+    if (!session) {
+      return null
+    }
+    if (isExpired(session.expiresAt)) {
+      this.state.sessionsByToken.delete(token)
+      return null
+    }
+
+    return session.userId
+  }
+
+  async createRefreshSession(
+    token: string,
+    userId: string,
+    expiresAt: string,
+    userAgent: string | null
+  ): Promise<void> {
+    this.state.refreshSessionsByToken.set(token, {
+      userId,
+      userAgent,
+      expiresAt
+    })
+  }
+
+  async consumeRefreshSession(token: string): Promise<string | null> {
+    const session = this.state.refreshSessionsByToken.get(token)
+    if (!session) {
+      return null
+    }
+
+    this.state.refreshSessionsByToken.delete(token)
+    if (isExpired(session.expiresAt)) {
+      return null
+    }
+
+    return session.userId
   }
 
   async createDirectThread(ownerId: string, participantIds: string[], title: string): Promise<DirectThread> {

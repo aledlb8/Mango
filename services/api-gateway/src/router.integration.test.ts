@@ -852,6 +852,46 @@ describe("api-gateway proxy integration", () => {
     expect(serviceHits.identity).toBeGreaterThan(hitsBeforeIdentity)
   })
 
+  it("rotates refresh tokens via auth refresh endpoint", async () => {
+    const register = await registerUser("refresh")
+
+    expect(typeof register.refreshToken).toBe("string")
+    expect(register.refreshToken.length).toBeGreaterThan(10)
+
+    const refreshed = await callGateway<AuthResponse>({
+      method: "POST",
+      path: "/v1/auth/refresh",
+      body: {
+        refreshToken: register.refreshToken
+      }
+    })
+
+    expect(refreshed.status).toBe(200)
+    expect(refreshed.body.token).not.toBe(register.token)
+    expect(refreshed.body.refreshToken).not.toBe(register.refreshToken)
+    expect(refreshed.body.user.id).toBe(register.user.id)
+
+    const reused = await callGateway<{ error: string }>({
+      method: "POST",
+      path: "/v1/auth/refresh",
+      body: {
+        refreshToken: register.refreshToken
+      }
+    })
+
+    expect(reused.status).toBe(401)
+    expect(reused.body.error).toContain("refresh token")
+
+    const me = await callGateway<User>({
+      method: "GET",
+      path: "/v1/me",
+      token: refreshed.body.token
+    })
+
+    expect(me.status).toBe(200)
+    expect(me.body.id).toBe(register.user.id)
+  })
+
   it("pushes direct-thread creation and messages to participants without refresh", async () => {
     const alice = await registerUser("realtimealice")
     const bob = await registerUser("realtimebob")

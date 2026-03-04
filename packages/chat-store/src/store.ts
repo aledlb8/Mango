@@ -104,8 +104,15 @@ export interface AppStore {
     action: "accept" | "reject"
   ): Promise<FriendRequest | null>
 
-  createSession(token: string, userId: string): Promise<void>
+  createSession(token: string, userId: string, expiresAt?: string): Promise<void>
   getUserIdByToken(token: string): Promise<string | null>
+  createRefreshSession(
+    token: string,
+    userId: string,
+    expiresAt: string,
+    userAgent: string | null
+  ): Promise<void>
+  consumeRefreshSession(token: string): Promise<string | null>
 
   createDirectThread(ownerId: string, participantIds: string[], title: string): Promise<DirectThread>
   listDirectThreadsForUser(userId: string): Promise<DirectThread[]>

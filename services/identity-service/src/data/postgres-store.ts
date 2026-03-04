@@ -1,4 +1,5 @@
 import { SQL } from "bun"
+import { createHash } from "node:crypto"
 import type { FriendRequest, User } from "@mango/contracts"
 import { createId } from "../id"
 import type { IdentityStore, StoredUser } from "./store"
@@ -31,6 +32,14 @@ type FriendRequestRow = {
 
 function toIso(value: string | Date): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString()
+}
+
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex")
+}
+
+function defaultSessionExpiryIso(): string {
+  return new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000).toISOString()
 }
 
 function mapUser(row: UserRow): StoredUser {
@@ -86,8 +95,49 @@ async function ensureSchema(sql: SQL): Promise<void> {
     CREATE TABLE IF NOT EXISTS sessions (
       token TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '30 days'
     )
+  `
+
+  await sql`
+    ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ
+  `
+
+  await sql`
+    UPDATE sessions
+    SET expires_at = COALESCE(expires_at, created_at + INTERVAL '30 days')
+  `
+
+  await sql`
+    ALTER TABLE sessions
+    ALTER COLUMN expires_at SET NOT NULL
+  `
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_sessions_expires_at
+    ON sessions (expires_at)
+  `
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS refresh_sessions (
+      token_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      user_agent TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ NOT NULL
+    )
+  `
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_refresh_sessions_user_id
+    ON refresh_sessions (user_id)
+  `
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_refresh_sessions_expires_at
+    ON refresh_sessions (expires_at)
   `
 
   await sql`
@@ -182,12 +232,15 @@ export class PostgresStore implements IdentityStore {
     return rows[0] ? mapUser(rows[0]) : null
   }
 
-  async createSession(token: string, userId: string): Promise<void> {
+  async createSession(token: string, userId: string, expiresAt: string = defaultSessionExpiryIso()): Promise<void> {
     const createdAt = new Date().toISOString()
     await this.sql`
-      INSERT INTO sessions (token, user_id, created_at)
-      VALUES (${token}, ${userId}, ${createdAt})
-      ON CONFLICT (token) DO UPDATE SET user_id = EXCLUDED.user_id
+      INSERT INTO sessions (token, user_id, created_at, expires_at)
+      VALUES (${token}, ${userId}, ${createdAt}, ${expiresAt})
+      ON CONFLICT (token)
+      DO UPDATE SET
+        user_id = EXCLUDED.user_id,
+        expires_at = EXCLUDED.expires_at
     `
   }
 
@@ -196,7 +249,33 @@ export class PostgresStore implements IdentityStore {
       SELECT user_id
       FROM sessions
       WHERE token = ${token}
+        AND expires_at > NOW()
       LIMIT 1
+    `
+    return rows[0]?.user_id ?? null
+  }
+
+  async createRefreshSession(
+    token: string,
+    userId: string,
+    expiresAt: string,
+    userAgent: string | null
+  ): Promise<void> {
+    const tokenHash = hashToken(token)
+    const createdAt = new Date().toISOString()
+    await this.sql`
+      INSERT INTO refresh_sessions (token_hash, user_id, user_agent, created_at, expires_at)
+      VALUES (${tokenHash}, ${userId}, ${userAgent}, ${createdAt}, ${expiresAt})
+    `
+  }
+
+  async consumeRefreshSession(token: string): Promise<string | null> {
+    const tokenHash = hashToken(token)
+    const rows = await this.sql<{ user_id: string }[]>`
+      DELETE FROM refresh_sessions
+      WHERE token_hash = ${tokenHash}
+        AND expires_at > NOW()
+      RETURNING user_id
     `
     return rows[0]?.user_id ?? null
   }

@@ -22,6 +22,7 @@ export type User = {
 
 export type AuthResponse = {
   token: string
+  refreshToken: string
   user: User
 }
 
@@ -239,6 +240,10 @@ export function register(payload: {
 
 export function login(payload: { identifier: string; password: string }) {
   return request<AuthResponse>("/v1/auth/login", { method: "POST", body: payload })
+}
+
+export function refreshSession(payload: { refreshToken: string }) {
+  return request<AuthResponse>("/v1/auth/refresh", { method: "POST", body: payload })
 }
 
 export function getMe(token: string) {
