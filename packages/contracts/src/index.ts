@@ -20,6 +20,19 @@ export type User = {
   createdAt: string;
 };
 
+export type DevicePlatform = "ios" | "android" | "web" | "desktop";
+
+export type Device = {
+  id: string;
+  userId: string;
+  platform: DevicePlatform;
+  label: string;
+  pushToken: string | null;
+  lastSeenAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type AuthResponse = {
   token: string;
   user: User;
@@ -100,7 +113,7 @@ export type Attachment = {
 
 export type DirectThreadType = "dm" | "group";
 
-export type DirectThread = {
+type BaseDirectThread = {
   id: string;
   channelId: string;
   kind: DirectThreadType;
@@ -109,6 +122,16 @@ export type DirectThread = {
   participantIds: string[];
   createdAt: string;
   updatedAt: string;
+};
+
+export type DirectThread = BaseDirectThread;
+
+export type DMThread = DirectThread & {
+  kind: "dm";
+};
+
+export type GroupThread = DirectThread & {
+  kind: "group";
 };
 
 export type ForumThreadStatus = "open" | "archived";
@@ -230,7 +253,7 @@ export type TypingIndicator = {
 
 export type VoiceTargetKind = "channel" | "direct_thread";
 
-export type VoiceParticipantState = {
+export type VoiceState = {
   userId: string;
   muted: boolean;
   deafened: boolean;
@@ -239,6 +262,8 @@ export type VoiceParticipantState = {
   joinedAt: string;
   lastSeenAt: string;
 };
+
+export type VoiceParticipantState = VoiceState;
 
 export type VoiceFeatureFlags = {
   screenShare: boolean;
@@ -253,7 +278,7 @@ export type VoiceSession = {
   updatedAt: string;
   reconnectGraceMs: number;
   features: VoiceFeatureFlags;
-  participants: VoiceParticipantState[];
+  participants: VoiceState[];
   signaling: {
     url: string;
     roomName: string;
@@ -383,15 +408,29 @@ export type CreateModerationActionRequest = {
   durationMinutes?: number;
 };
 
-export type AuditLogEntry = {
+export type AuditEventTargetType =
+  | "user"
+  | "server"
+  | "channel"
+  | "message"
+  | "thread"
+  | "role"
+  | "unknown";
+
+export type AuditEvent = {
   id: string;
   serverId: string;
   actorId: string | null;
-  targetUserId: string | null;
   actionType: string;
+  targetType?: AuditEventTargetType;
+  targetId?: string | null;
   reason: string | null;
   metadata: Record<string, unknown>;
   createdAt: string;
+};
+
+export type AuditLogEntry = AuditEvent & {
+  targetUserId: string | null;
 };
 
 export type SearchScope = "all" | "messages" | "users" | "channels";
@@ -411,6 +450,23 @@ export type PushSubscription = {
   userAgent: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type NotificationChannel = "push" | "email" | "in_app";
+export type NotificationStatus = "pending" | "sent" | "failed" | "read";
+
+export type Notification = {
+  id: string;
+  userId: string;
+  channel: NotificationChannel;
+  title: string;
+  body: string;
+  url: string | null;
+  status: NotificationStatus;
+  attempts: number;
+  lastError: string | null;
+  createdAt: string;
+  processedAt: string | null;
 };
 
 export type CreatePushSubscriptionRequest = {
@@ -562,6 +618,70 @@ export type RealtimeClientMessage =
       type: "ping";
     };
 
+export type MemberJoinedEvent = {
+  serverId: string;
+  userId: string;
+  joinedAt: string;
+};
+
+export type MemberLeftReason = "left" | "kicked" | "banned" | "removed";
+
+export type MemberLeftEvent = {
+  serverId: string;
+  userId: string;
+  leftAt: string;
+  reason: MemberLeftReason;
+};
+
+export type ReactionUpdatedEvent = {
+  conversationId: string;
+  directThreadId: string | null;
+  messageId: string;
+  reactions: MessageReactionSummary[];
+};
+
+export type ReactionChangedEvent = ReactionUpdatedEvent & {
+  emoji: string;
+  userId: string;
+};
+
+export type VoiceSessionStartedEvent = {
+  session: VoiceSession;
+  startedAt: string;
+};
+
+export type VoiceSessionEndedReason = "empty" | "terminated" | "timeout" | "replaced";
+
+export type VoiceSessionEndedEvent = {
+  sessionId: string;
+  targetKind: VoiceTargetKind;
+  targetId: string;
+  serverId: string | null;
+  endedAt: string;
+  reason: VoiceSessionEndedReason;
+};
+
+export type RealtimeServerEventType =
+  | "ready"
+  | "subscribed"
+  | "unsubscribed"
+  | "message.created"
+  | "direct-thread.created"
+  | "message.updated"
+  | "message.deleted"
+  | "reaction.updated"
+  | "reaction.added"
+  | "reaction.removed"
+  | "member.joined"
+  | "member.left"
+  | "typing.updated"
+  | "presence.updated"
+  | "voice.session.started"
+  | "voice.session.updated"
+  | "voice.session.ended"
+  | "pong"
+  | "error";
+
 export type RealtimeServerMessage =
   | {
       type: "ready";
@@ -593,12 +713,23 @@ export type RealtimeServerMessage =
     }
   | {
       type: "reaction.updated";
-      payload: {
-        conversationId: string;
-        directThreadId: string | null;
-        messageId: string;
-        reactions: MessageReactionSummary[];
-      };
+      payload: ReactionUpdatedEvent;
+    }
+  | {
+      type: "reaction.added";
+      payload: ReactionChangedEvent;
+    }
+  | {
+      type: "reaction.removed";
+      payload: ReactionChangedEvent;
+    }
+  | {
+      type: "member.joined";
+      payload: MemberJoinedEvent;
+    }
+  | {
+      type: "member.left";
+      payload: MemberLeftEvent;
     }
   | {
       type: "typing.updated";
@@ -609,8 +740,16 @@ export type RealtimeServerMessage =
       payload: PresenceState;
     }
   | {
+      type: "voice.session.started";
+      payload: VoiceSessionStartedEvent;
+    }
+  | {
       type: "voice.session.updated";
       payload: VoiceSession;
+    }
+  | {
+      type: "voice.session.ended";
+      payload: VoiceSessionEndedEvent;
     }
   | {
       type: "pong";
