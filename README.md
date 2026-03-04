@@ -49,6 +49,9 @@ Then open `http://localhost:3000`.
 - `bun run dev:lite` - starts identity + community + messaging + API gateway + web app (no Docker required)
 - `bun run lint` - runs lint/type checks for all projects
 - `bun run test` - runs tests for all projects
+- `bun run test:contract` - runs API contract-focused tests
+- `bun run test:e2e` - runs end-to-end multi-service chat flow test
+- `bun run test:load` - runs API gateway HTTP load smoke test
 
 ## Notes
 
@@ -67,6 +70,10 @@ Then open `http://localhost:3000`.
 - `notification-worker` now uses atomic queue claiming with retries to avoid duplicate delivery attempts across concurrent worker instances.
 - `moderation-worker` runs a safety triage pipeline against `/v1/safety/reports` and `/v1/safety/appeals` using admin-key-authenticated review updates.
 - screen-share controls are behind `ENABLE_SCREEN_SHARE=true` (gateway) and `VOICE_SIGNALING_ENABLE_SCREEN_SHARE=true` (voice signaling).
+- message send idempotency is supported on message creation endpoints via `Idempotency-Key` when `ENABLE_MESSAGE_IDEMPOTENCY=true` (default).
+- API gateway emits structured JSON request logs when `ENABLE_STRUCTURED_LOGGING=true` (default).
+- API gateway exposes Prometheus metrics at `GET /metrics` when `ENABLE_METRICS_ENDPOINT=true` (default).
+- API gateway propagates `X-Trace-Id` and includes `traceId` in JSON error responses when `ENABLE_TRACE_ID_ERROR_RESPONSES=true` (default).
 - release/admin endpoints are protected by `ADMIN_API_KEY` for `/v1/admin/*` and optional global trust/safety review access.
 - API gateway store modes:
 - `STORE_MODE=postgres` (default): uses Postgres + runs SQL migrations at startup

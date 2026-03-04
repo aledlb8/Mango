@@ -1,0 +1,57 @@
+{
+  "title": "Mango API Gateway",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Request Throughput (req/s)",
+      "targets": [
+        {
+          "expr": "sum(rate(mango_api_requests_total[1m]))",
+          "legendFormat": "all"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Error Rate (%)",
+      "targets": [
+        {
+          "expr": "100 * sum(rate(mango_api_request_errors_total[5m])) / clamp_min(sum(rate(mango_api_requests_total[5m])), 1)",
+          "legendFormat": "error-rate"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency p95 (ms)",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(mango_api_request_duration_ms_bucket[5m])))",
+          "legendFormat": "p95"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      }
+    }
+  ]
+}

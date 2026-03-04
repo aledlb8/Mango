@@ -1,0 +1,31 @@
+groups:
+  - name: mango-api-gateway
+    interval: 30s
+    rules:
+      - alert: MangoApiGatewayHighErrorRate
+        expr: |
+          sum(rate(mango_api_request_errors_total[5m]))
+          /
+          clamp_min(sum(rate(mango_api_requests_total[5m])), 1)
+          > 0.05
+        for: 5m
+        labels:
+          severity: page
+          service: api-gateway
+        annotations:
+          summary: "API gateway error rate is above 5%"
+          description: "Error ratio over 5 minutes exceeded 5%."
+
+      - alert: MangoApiGatewayHighLatencyP95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(mango_api_request_duration_ms_bucket[5m]))
+          ) > 250
+        for: 10m
+        labels:
+          severity: page
+          service: api-gateway
+        annotations:
+          summary: "API gateway p95 latency is above 250ms"
+          description: "Latency p95 over 5 minutes exceeded 250ms for 10 minutes."
