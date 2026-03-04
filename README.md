@@ -62,6 +62,7 @@ Then open `http://localhost:3000`.
 - `api-gateway` delegates messaging endpoints (`/v1/channels/:channelId/messages`, `/v1/messages/*`) to `messaging-service` when `PREFER_MESSAGING_SERVICE_PROXY=true` (default).
 - `api-gateway` delegates voice/call signaling endpoints (`/v1/voice/*`) to `voice-signaling` when `PREFER_VOICE_SIGNALING_PROXY=true` (default).
 - `voice-signaling` issues LiveKit participant JWTs using `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` (local defaults: `devkey` / `secret`).
+- `media-service` validates upload payloads by media type/size/extension and supports upload-token issuance (`POST /v1/uploads/tokens`) plus attachment metadata retrieval (`GET /v1/attachments/:attachmentId/metadata`).
 - realtime websocket fanout (`/v1/ws`) is owned by `realtime-gateway`; `api-gateway` publishes internal realtime events to it when messaging/presence/voice operations complete.
 - screen-share controls are behind `ENABLE_SCREEN_SHARE=true` (gateway) and `VOICE_SIGNALING_ENABLE_SCREEN_SHARE=true` (voice signaling).
 - release/admin endpoints are protected by `ADMIN_API_KEY` for `/v1/admin/*` and optional global trust/safety review access.
