@@ -51,7 +51,7 @@ Then open `http://localhost:3000`.
 - `bun run test` - runs tests for all projects
 - `bun run test:contract` - runs API contract-focused tests
 - `bun run test:e2e` - runs end-to-end multi-service chat flow test
-- `bun run test:load` - runs API gateway HTTP load smoke test
+- `bun run test:load` - runs HTTP + websocket fanout load smoke tests
 
 ## Notes
 
@@ -61,6 +61,7 @@ Then open `http://localhost:3000`.
 - LiveKit local media ports: UDP range `7882-7982` (configurable via `LIVEKIT_RTC_UDP_PORT_RANGE`), plus TCP `7881`.
 - LiveKit advertised media IP is configurable via `LIVEKIT_NODE_IP` (set to `127.0.0.1` for same-machine testing, or your LAN IP when clients are on other devices).
 - `api-gateway` delegates identity endpoints (`/v1/auth/*`, `/v1/me`, `/v1/users/*`, `/v1/friends`) to `identity-service` when `PREFER_IDENTITY_SERVICE_PROXY=true` (default).
+- auth sessions use short-lived access tokens plus refresh token rotation via `POST /v1/auth/refresh`; TTL is configurable with `ACCESS_TOKEN_TTL_SECONDS` and `REFRESH_TOKEN_TTL_SECONDS`.
 - `api-gateway` delegates community endpoints (`/v1/servers/*`, `/v1/channels/:channelId/overwrites`, `/v1/invites/:code/join`) to `community-service` when `PREFER_COMMUNITY_SERVICE_PROXY=true` (default).
 - `api-gateway` delegates messaging endpoints (`/v1/channels/:channelId/messages`, `/v1/messages/*`) to `messaging-service` when `PREFER_MESSAGING_SERVICE_PROXY=true` (default).
 - `api-gateway` delegates voice/call signaling endpoints (`/v1/voice/*`) to `voice-signaling` when `PREFER_VOICE_SIGNALING_PROXY=true` (default).
@@ -85,6 +86,13 @@ Then open `http://localhost:3000`.
 - `docs/adr/0001-id-strategy.md`
 - `docs/adr/0002-permission-model.md`
 - `docs/adr/0003-store-fallback-policy.md`
+
+## Operations Docs
+
+- `docs/runbooks/top-10-failures.md`
+- `docs/runbooks/on-call.md`
+- `docs/operations/postmortem-template.md`
+- `docs/operations/slo-sla-baseline.md`
 
 ## Vertical Slice Implemented
 
