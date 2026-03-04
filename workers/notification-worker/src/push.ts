@@ -50,6 +50,27 @@ export function isExpiredSubscriptionError(reason: unknown): boolean {
   return maybeStatusCode === 404 || maybeStatusCode === 410
 }
 
+export function isRetryablePushError(reason: unknown): boolean {
+  if (!reason || typeof reason !== "object") {
+    return true
+  }
+
+  const maybeStatusCode = (reason as { statusCode?: number }).statusCode
+  if (typeof maybeStatusCode !== "number") {
+    return true
+  }
+
+  if (maybeStatusCode === 429) {
+    return true
+  }
+
+  if (maybeStatusCode >= 500) {
+    return true
+  }
+
+  return false
+}
+
 export function errorMessage(reason: unknown): string {
   if (reason instanceof Error) {
     return reason.message

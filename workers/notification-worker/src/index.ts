@@ -1,23 +1,30 @@
 import { SQL } from "bun"
-import { batchSize, databaseUrl, intervalMs } from "./config"
+import { batchSize, databaseUrl, intervalMs, maxAttempts } from "./config"
 import {
+  claimPendingJobs,
   connect,
   deleteSubscriptionByID,
-  listPendingJobs,
+  failExhaustedPendingJobs,
   listSubscriptionsForUser,
-  markJobAttempt,
   markJobFailed,
+  markJobRetry,
   markJobSent
 } from "./db"
 import {
   ensureWebPushConfigured,
   errorMessage,
   isExpiredSubscriptionError,
+  isRetryablePushError,
   sendPush
 } from "./push"
 
 async function processBatch(sql: SQL): Promise<void> {
-  const jobs = await listPendingJobs(sql, batchSize)
+  const exhaustedCount = await failExhaustedPendingJobs(sql, maxAttempts)
+  if (exhaustedCount > 0) {
+    console.warn(`[notification-worker] marked ${exhaustedCount} exhausted jobs as failed.`)
+  }
+
+  const jobs = await claimPendingJobs(sql, batchSize, maxAttempts)
   if (jobs.length === 0) {
     return
   }
@@ -28,8 +35,6 @@ async function processBatch(sql: SQL): Promise<void> {
   }
 
   for (const job of jobs) {
-    await markJobAttempt(sql, job.id)
-
     if (!webPushEnabled) {
       await markJobFailed(sql, job.id, "Web push is not configured.")
       continue
@@ -42,6 +47,7 @@ async function processBatch(sql: SQL): Promise<void> {
     }
 
     let delivered = false
+    let hasRetryableFailure = false
     let lastError = "Failed to deliver notification."
 
     for (const subscription of subscriptions) {
@@ -64,6 +70,9 @@ async function processBatch(sql: SQL): Promise<void> {
         delivered = true
       } catch (reason) {
         lastError = errorMessage(reason)
+        if (isRetryablePushError(reason)) {
+          hasRetryableFailure = true
+        }
         if (isExpiredSubscriptionError(reason)) {
           await deleteSubscriptionByID(sql, subscription.id)
         }
@@ -72,6 +81,11 @@ async function processBatch(sql: SQL): Promise<void> {
 
     if (delivered) {
       await markJobSent(sql, job.id)
+      continue
+    }
+
+    if (hasRetryableFailure && job.attempts < maxAttempts) {
+      await markJobRetry(sql, job.id, lastError)
     } else {
       await markJobFailed(sql, job.id, lastError)
     }
@@ -80,7 +94,9 @@ async function processBatch(sql: SQL): Promise<void> {
 
 async function main(): Promise<void> {
   const sql = await connect(databaseUrl)
-  console.log(`[notification-worker] started (interval: ${intervalMs}ms, batch: ${batchSize})`)
+  console.log(
+    `[notification-worker] started (interval: ${intervalMs}ms, batch: ${batchSize}, maxAttempts: ${maxAttempts})`
+  )
 
   await processBatch(sql).catch((reason) => {
     console.error("[notification-worker] initial batch failed:", errorMessage(reason))

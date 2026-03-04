@@ -62,6 +62,26 @@ async function main() {
     });
   }
 
+  if (Bun.which("uv")) {
+    await runCommand({
+      command: [
+        "uv",
+        "run",
+        "--project",
+        "workers/moderation-worker",
+        "python",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "workers/moderation-worker/tests"
+      ],
+      label: "workers/moderation-worker"
+    });
+  } else {
+    console.log("[workers/moderation-worker] uv not found, skipping python tests.");
+  }
+
   await runCommand({
     command: ["pnpm", "--dir", "apps/web", "test"],
     label: "apps/web"

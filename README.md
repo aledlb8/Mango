@@ -64,6 +64,8 @@ Then open `http://localhost:3000`.
 - `voice-signaling` issues LiveKit participant JWTs using `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` (local defaults: `devkey` / `secret`).
 - `media-service` validates upload payloads by media type/size/extension and supports upload-token issuance (`POST /v1/uploads/tokens`) plus attachment metadata retrieval (`GET /v1/attachments/:attachmentId/metadata`).
 - realtime websocket fanout (`/v1/ws`) is owned by `realtime-gateway`; `api-gateway` publishes internal realtime events to it when messaging/presence/voice operations complete.
+- `notification-worker` now uses atomic queue claiming with retries to avoid duplicate delivery attempts across concurrent worker instances.
+- `moderation-worker` runs a safety triage pipeline against `/v1/safety/reports` and `/v1/safety/appeals` using admin-key-authenticated review updates.
 - screen-share controls are behind `ENABLE_SCREEN_SHARE=true` (gateway) and `VOICE_SIGNALING_ENABLE_SCREEN_SHARE=true` (voice signaling).
 - release/admin endpoints are protected by `ADMIN_API_KEY` for `/v1/admin/*` and optional global trust/safety review access.
 - API gateway store modes:

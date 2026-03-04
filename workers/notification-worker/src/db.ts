@@ -31,14 +31,40 @@ export async function connect(databaseUrl: string): Promise<SQL> {
   return sql
 }
 
-export async function listPendingJobs(sql: SQL, limit: number): Promise<NotificationJob[]> {
-  const rows = await sql<NotificationJobRow[]>`
-    SELECT id, user_id, title, body, url, attempts
-    FROM notification_jobs
+export async function failExhaustedPendingJobs(sql: SQL, maxAttempts: number): Promise<number> {
+  const rows = await sql<{ id: string }[]>`
+    UPDATE notification_jobs
+    SET status = 'failed',
+        processed_at = NOW(),
+        last_error = COALESCE(last_error, 'Exceeded max delivery attempts.')
     WHERE status = 'pending'
-      AND attempts < 10
-    ORDER BY created_at ASC
-    LIMIT ${limit}
+      AND attempts >= ${maxAttempts}
+    RETURNING id
+  `
+
+  return rows.length
+}
+
+export async function claimPendingJobs(
+  sql: SQL,
+  limit: number,
+  maxAttempts: number
+): Promise<NotificationJob[]> {
+  const rows = await sql<NotificationJobRow[]>`
+    WITH claimed AS (
+      SELECT id
+      FROM notification_jobs
+      WHERE status = 'pending'
+        AND attempts < ${maxAttempts}
+      ORDER BY created_at ASC
+      FOR UPDATE SKIP LOCKED
+      LIMIT ${limit}
+    )
+    UPDATE notification_jobs jobs
+    SET attempts = jobs.attempts + 1
+    FROM claimed
+    WHERE jobs.id = claimed.id
+    RETURNING jobs.id, jobs.user_id, jobs.title, jobs.body, jobs.url, jobs.attempts
   `
 
   return rows.map((row) => ({
@@ -49,14 +75,6 @@ export async function listPendingJobs(sql: SQL, limit: number): Promise<Notifica
     url: row.url,
     attempts: row.attempts
   }))
-}
-
-export async function markJobAttempt(sql: SQL, jobId: string): Promise<void> {
-  await sql`
-    UPDATE notification_jobs
-    SET attempts = attempts + 1
-    WHERE id = ${jobId}
-  `
 }
 
 export async function markJobSent(sql: SQL, jobId: string): Promise<void> {
@@ -74,6 +92,16 @@ export async function markJobFailed(sql: SQL, jobId: string, reason: string): Pr
     UPDATE notification_jobs
     SET status = 'failed',
         processed_at = NOW(),
+        last_error = ${reason}
+    WHERE id = ${jobId}
+  `
+}
+
+export async function markJobRetry(sql: SQL, jobId: string, reason: string): Promise<void> {
+  await sql`
+    UPDATE notification_jobs
+    SET status = 'pending',
+        processed_at = NULL,
         last_error = ${reason}
     WHERE id = ${jobId}
   `

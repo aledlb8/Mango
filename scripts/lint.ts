@@ -36,6 +36,26 @@ async function main() {
     });
   }
 
+  if (Bun.which("uv")) {
+    await runCommand({
+      command: [
+        "uv",
+        "run",
+        "--project",
+        "workers/moderation-worker",
+        "python",
+        "-m",
+        "compileall",
+        "-q",
+        "workers/moderation-worker/src/moderation_worker",
+        "workers/moderation-worker/tests"
+      ],
+      label: "workers/moderation-worker"
+    });
+  } else {
+    console.log("[workers/moderation-worker] uv not found, skipping python lint checks.");
+  }
+
   await runCommand({
     command: ["pnpm", "--dir", "apps/web", "lint"],
     label: "apps/web"

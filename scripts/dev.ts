@@ -57,6 +57,15 @@ async function main() {
     { label: "web", command: ["pnpm", "dev"], cwd: "apps/web" }
   ];
 
+  if (Bun.which("uv")) {
+    processSpecs.push({
+      label: "moderation-worker",
+      command: ["uv", "run", "--project", "workers/moderation-worker", "moderation-worker"]
+    });
+  } else {
+    console.log("[moderation-worker] uv not found, skipping moderation worker process.");
+  }
+
   const children = processSpecs.map((spec) => startProcess(spec));
 
   const shutdown = () => {

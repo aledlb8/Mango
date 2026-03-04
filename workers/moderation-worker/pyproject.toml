@@ -1,7 +1,7 @@
 [project]
 name = "mango-moderation-worker"
 version = "0.1.0"
-description = "Moderation worker scaffold for Mango."
+description = "Safety moderation triage worker for Mango."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
