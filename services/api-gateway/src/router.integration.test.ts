@@ -32,6 +32,14 @@ import type {
   VoiceSession
 } from "@mango/contracts"
 import { MemoryStore } from "./data/memory-store"
+import { IdempotencyManager } from "./idempotency/manager"
+import type {
+  IdempotencyLookupParams,
+  IdempotencyLookupResult,
+  IdempotencySaveParams,
+  IdempotencyStore,
+  StoredIdempotencyResponse
+} from "./idempotency/store"
 import { RealtimeHub } from "./realtime/hub"
 import { routeRequest as routeCommunityRequest } from "../../community-service/src/router"
 import { routeRequest as routeIdentityRequest } from "../../identity-service/src/router"
@@ -64,8 +72,51 @@ type FakeSocket = {
   send: (payload: string) => void
 }
 
+type TestIdempotencyEntry = {
+  fingerprint: string
+  response: StoredIdempotencyResponse
+}
+
+class TestIdempotencyStore implements IdempotencyStore {
+  private readonly entries = new Map<string, TestIdempotencyEntry>()
+
+  private compositeKey(params: { userId: string; key: string; scope: string }): string {
+    return `${params.userId}:${params.key}:${params.scope}`
+  }
+
+  async lookup(params: IdempotencyLookupParams): Promise<IdempotencyLookupResult> {
+    const entry = this.entries.get(this.compositeKey(params))
+    if (!entry) {
+      return {
+        kind: "miss"
+      }
+    }
+    if (entry.fingerprint !== params.fingerprint) {
+      return {
+        kind: "conflict"
+      }
+    }
+    return {
+      kind: "replay",
+      response: entry.response
+    }
+  }
+
+  async save(params: IdempotencySaveParams): Promise<void> {
+    const key = this.compositeKey(params)
+    if (this.entries.has(key)) {
+      return
+    }
+    this.entries.set(key, {
+      fingerprint: params.fingerprint,
+      response: params.response
+    })
+  }
+}
+
 const store = new MemoryStore()
 const realtimeHub = new RealtimeHub()
+const idempotencyManager = new IdempotencyManager(new TestIdempotencyStore())
 const serviceHits: ServiceHits = {
   identity: 0,
   community: 0,
@@ -117,6 +168,7 @@ function createGatewayContext(): unknown {
     service: "api-gateway",
     corsOrigin: "*",
     store,
+    idempotencyManager,
     realtimeHub
   }
 }
@@ -144,7 +196,7 @@ async function callGateway<T>(params: {
   token?: string
   headers?: Record<string, string>
   body?: unknown
-}): Promise<{ status: number; body: T }> {
+}): Promise<{ status: number; body: T; headers: Headers }> {
   const headers = new Headers()
   if (params.token) {
     headers.set("Authorization", `Bearer ${params.token}`)
@@ -168,7 +220,8 @@ async function callGateway<T>(params: {
   const body = await parseJson<T>(response)
   return {
     status: response.status,
-    body
+    body,
+    headers: response.headers
   }
 }
 
@@ -1575,6 +1628,56 @@ describe("api-gateway proxy integration", () => {
     expect(search.status).toBe(200)
     expect(search.body.messages.some((message) => message.id === createdMessage.body.id)).toBe(true)
     expect(search.body.channels.some((channel) => channel.id === bootstrap.channel.id)).toBe(false)
+  })
+
+  it("supports idempotency keys on message create routes", async () => {
+    const auth = await registerUser("idempotency")
+    const bootstrap = await bootstrapServerAndChannel(auth.token, "idempotency")
+    const idempotencyKey = `idem-${createUniqueSuffix()}`
+
+    const firstSend = await callGateway<Message>({
+      method: "POST",
+      path: `/v1/channels/${bootstrap.channel.id}/messages`,
+      token: auth.token,
+      headers: {
+        "Idempotency-Key": idempotencyKey
+      },
+      body: {
+        body: "idempotent payload"
+      } satisfies CreateMessageRequest
+    })
+    expect(firstSend.status).toBe(201)
+    expect(firstSend.headers.get("x-idempotency-replayed")).toBe(null)
+
+    const replaySend = await callGateway<Message>({
+      method: "POST",
+      path: `/v1/channels/${bootstrap.channel.id}/messages`,
+      token: auth.token,
+      headers: {
+        "Idempotency-Key": idempotencyKey
+      },
+      body: {
+        body: "idempotent payload"
+      } satisfies CreateMessageRequest
+    })
+    expect(replaySend.status).toBe(201)
+    expect(replaySend.headers.get("x-idempotency-replayed")).toBe("true")
+    expect(replaySend.body.id).toBe(firstSend.body.id)
+    expect(replaySend.body.body).toBe(firstSend.body.body)
+
+    const conflictSend = await callGateway<{ error: string }>({
+      method: "POST",
+      path: `/v1/channels/${bootstrap.channel.id}/messages`,
+      token: auth.token,
+      headers: {
+        "Idempotency-Key": idempotencyKey
+      },
+      body: {
+        body: "different payload"
+      } satisfies CreateMessageRequest
+    })
+    expect(conflictSend.status).toBe(409)
+    expect(conflictSend.body.error).toContain("Idempotency key")
   })
 
   it("routes through dedicated services and falls back when messaging service is unavailable", async () => {

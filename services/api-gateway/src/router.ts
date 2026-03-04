@@ -9,6 +9,7 @@ import type {
 import { createHealthResponse } from "@mango/contracts"
 import {
   communityServiceUrl,
+  enableMessageIdempotency,
   identityServiceUrl,
   mediaServiceUrl,
   messagingServiceUrl,
@@ -20,6 +21,7 @@ import {
   preferPresenceServiceProxy,
   preferVoiceSignalingProxy
 } from "./config"
+import { getAuthenticatedUser } from "./auth/session"
 import { handleGetAdminAnalyticsOverview } from "./handlers/admin-analytics"
 import { handleGetMe, handleLogin, handleRegister } from "./handlers/auth"
 import {
@@ -123,6 +125,7 @@ import {
   handleVoiceChannelScreenShare
 } from "./handlers/voice"
 import { corsHeaders, error, json } from "./http/response"
+import { hashRequestFingerprint } from "./idempotency/manager"
 import { checkRateLimit } from "./rate-limit"
 import type { RouteContext } from "./router-context"
 
@@ -244,6 +247,15 @@ async function proxyToService(
     headers.Cookie = cookie
   }
 
+  const idempotencyKey = request.headers.get("idempotency-key")
+  if (idempotencyKey) {
+    headers["Idempotency-Key"] = idempotencyKey
+  }
+
+  if (ctx.traceId) {
+    headers["X-Trace-Id"] = ctx.traceId
+  }
+
   const method = request.method.toUpperCase()
   const sendBody = !["GET", "HEAD", "OPTIONS"].includes(method)
   const body = sendBody ? await request.clone().text() : undefined
@@ -269,6 +281,54 @@ async function proxyToService(
   } catch {
     return null
   }
+}
+
+function readIdempotencyKey(request: Request): string | null {
+  const key = request.headers.get("idempotency-key")?.trim()
+  if (!key) {
+    return null
+  }
+
+  if (key.length > 255) {
+    return null
+  }
+
+  return key
+}
+
+async function applyMessageIdempotency(
+  request: Request,
+  scope: string,
+  ctx: RouteContext,
+  executeRequest: () => Promise<Response>
+): Promise<Response> {
+  if (!enableMessageIdempotency || !ctx.idempotencyManager) {
+    return executeRequest()
+  }
+
+  const idempotencyKey = readIdempotencyKey(request)
+  if (!idempotencyKey) {
+    return executeRequest()
+  }
+
+  const user = await getAuthenticatedUser(request, ctx.store)
+  if (!user) {
+    return executeRequest()
+  }
+
+  const payload = await request.clone().text()
+  const fingerprint = hashRequestFingerprint(request.method, scope, payload)
+
+  return ctx.idempotencyManager.execute(
+    {
+      userId: user.id,
+      key: idempotencyKey,
+      scope,
+      fingerprint,
+      corsOrigin: ctx.corsOrigin
+    },
+    executeRequest
+  )
 }
 
 async function parseProxiedJson<T>(response: Response): Promise<T | null> {
@@ -823,14 +883,21 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
 
   const directThreadMessagesMatch = pathname.match(directThreadMessagesRoute)
   if (directThreadMessagesMatch?.[1] && request.method === "POST") {
-    if (shouldProxyMessaging(ctx)) {
-      const proxied = await proxyToService(messagingServiceUrl, request, ctx)
-      if (proxied) {
-        await publishRealtimeFromMessagingProxy(pathname, request.method, proxied, ctx)
-        return proxied
+    return await applyMessageIdempotency(
+      request,
+      `direct-thread:${directThreadMessagesMatch[1]}:messages`,
+      ctx,
+      async () => {
+        if (shouldProxyMessaging(ctx)) {
+          const proxied = await proxyToService(messagingServiceUrl, request, ctx)
+          if (proxied) {
+            await publishRealtimeFromMessagingProxy(pathname, request.method, proxied, ctx)
+            return proxied
+          }
+        }
+        return await handleCreateDirectThreadMessage(request, directThreadMessagesMatch[1], ctx)
       }
-    }
-    return await handleCreateDirectThreadMessage(request, directThreadMessagesMatch[1], ctx)
+    )
   }
 
   if (directThreadMessagesMatch?.[1] && request.method === "GET") {
@@ -896,7 +963,12 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
 
   const threadMessagesMatch = pathname.match(threadMessagesRoute)
   if (threadMessagesMatch?.[1] && request.method === "POST") {
-    return await handleCreateForumThreadMessage(request, threadMessagesMatch[1], ctx)
+    return await applyMessageIdempotency(
+      request,
+      `thread:${threadMessagesMatch[1]}:messages`,
+      ctx,
+      async () => await handleCreateForumThreadMessage(request, threadMessagesMatch[1], ctx)
+    )
   }
 
   if (threadMessagesMatch?.[1] && request.method === "GET") {
@@ -930,14 +1002,21 @@ export async function routeRequest(request: Request, ctx: RouteContext): Promise
 
   const channelMessagesMatch = pathname.match(channelMessagesRoute)
   if (channelMessagesMatch?.[1] && request.method === "POST") {
-    if (shouldProxyMessaging(ctx)) {
-      const proxied = await proxyToService(messagingServiceUrl, request, ctx)
-      if (proxied) {
-        await publishRealtimeFromMessagingProxy(pathname, request.method, proxied, ctx)
-        return proxied
+    return await applyMessageIdempotency(
+      request,
+      `channel:${channelMessagesMatch[1]}:messages`,
+      ctx,
+      async () => {
+        if (shouldProxyMessaging(ctx)) {
+          const proxied = await proxyToService(messagingServiceUrl, request, ctx)
+          if (proxied) {
+            await publishRealtimeFromMessagingProxy(pathname, request.method, proxied, ctx)
+            return proxied
+          }
+        }
+        return await handleCreateMessage(request, channelMessagesMatch[1], ctx)
       }
-    }
-    return await handleCreateMessage(request, channelMessagesMatch[1], ctx)
+    )
   }
 
   if (channelMessagesMatch?.[1] && request.method === "GET") {

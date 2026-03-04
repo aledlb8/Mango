@@ -1,3 +1,5 @@
+import { FeatureFlagManager, type FeatureFlagDefinition } from "@mango/config"
+
 export const service = "api-gateway"
 export const port = Number(process.env.API_GATEWAY_PORT ?? 3001)
 export const corsOrigin = process.env.CORS_ORIGIN ?? "*"
@@ -19,5 +21,48 @@ export const preferVoiceSignalingProxy = process.env.PREFER_VOICE_SIGNALING_PROX
 export const realtimeGatewayUrl = process.env.REALTIME_GATEWAY_URL ?? "http://localhost:4001"
 export const preferRealtimeGatewayFanout = process.env.PREFER_REALTIME_GATEWAY_FANOUT !== "false"
 export const realtimeGatewayInternalApiKey = process.env.REALTIME_GATEWAY_INTERNAL_API_KEY ?? ""
-export const enableScreenShare = process.env.ENABLE_SCREEN_SHARE === "true"
+export const idempotencyKeyTtlSeconds = Math.max(
+  60,
+  Number(process.env.IDEMPOTENCY_KEY_TTL_SECONDS ?? 60 * 60 * 24)
+)
 export const adminApiKey = process.env.ADMIN_API_KEY ?? ""
+
+const featureFlagDefinitions: FeatureFlagDefinition[] = [
+  {
+    key: "screen_share",
+    defaultValue: false,
+    description: "Enable screen-share controls.",
+    aliases: ["ENABLE_SCREEN_SHARE"]
+  },
+  {
+    key: "message_idempotency",
+    defaultValue: true,
+    description: "Enable idempotency key support for message send routes.",
+    aliases: ["ENABLE_MESSAGE_IDEMPOTENCY"]
+  },
+  {
+    key: "structured_logging",
+    defaultValue: true,
+    description: "Emit structured JSON request logs.",
+    aliases: ["ENABLE_STRUCTURED_LOGGING"]
+  },
+  {
+    key: "metrics_endpoint",
+    defaultValue: true,
+    description: "Expose Prometheus metrics endpoint.",
+    aliases: ["ENABLE_METRICS_ENDPOINT"]
+  },
+  {
+    key: "trace_id_error_responses",
+    defaultValue: true,
+    description: "Include trace IDs in JSON error payloads.",
+    aliases: ["ENABLE_TRACE_ID_ERROR_RESPONSES"]
+  }
+]
+
+const featureFlags = new FeatureFlagManager(featureFlagDefinitions).snapshot()
+export const enableScreenShare = featureFlags.screen_share
+export const enableMessageIdempotency = featureFlags.message_idempotency
+export const enableStructuredLogging = featureFlags.structured_logging
+export const enableMetricsEndpoint = featureFlags.metrics_endpoint
+export const enableTraceIdErrorResponses = featureFlags.trace_id_error_responses

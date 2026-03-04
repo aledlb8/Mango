@@ -3,8 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
-    "lint": "echo \"config package: nothing to lint yet\"",
-    "test": "echo \"config package: no tests yet\""
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test"
   }
 }
