@@ -62,7 +62,7 @@ Then open `http://localhost:3000`.
 - `api-gateway` delegates messaging endpoints (`/v1/channels/:channelId/messages`, `/v1/messages/*`) to `messaging-service` when `PREFER_MESSAGING_SERVICE_PROXY=true` (default).
 - `api-gateway` delegates voice/call signaling endpoints (`/v1/voice/*`) to `voice-signaling` when `PREFER_VOICE_SIGNALING_PROXY=true` (default).
 - `voice-signaling` issues LiveKit participant JWTs using `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` (local defaults: `devkey` / `secret`).
-- realtime websocket fanout (`/v1/ws`) remains in `api-gateway`; when messaging is proxied, websocket events are published from proxied messaging responses.
+- realtime websocket fanout (`/v1/ws`) is owned by `realtime-gateway`; `api-gateway` publishes internal realtime events to it when messaging/presence/voice operations complete.
 - screen-share controls are behind `ENABLE_SCREEN_SHARE=true` (gateway) and `VOICE_SIGNALING_ENABLE_SCREEN_SHARE=true` (voice signaling).
 - release/admin endpoints are protected by `ADMIN_API_KEY` for `/v1/admin/*` and optional global trust/safety review access.
 - API gateway store modes:
@@ -123,7 +123,7 @@ Then open `http://localhost:3000`.
 - `GET /v1/safety/appeals`
 - `PATCH /v1/safety/appeals/:appealId`
 - `GET /v1/admin/analytics/overview?days=30` (requires `X-Admin-Key`)
-- `GET /v1/ws?token=...` websocket endpoint for live channel events
+- `GET /v1/ws?token=...` websocket endpoint for live channel events (served by `realtime-gateway`, default `ws://localhost:4001`)
 
 The web app is now login-gated and chat-oriented:
 - session token stored in browser cookie (`mango_token`)

@@ -3,7 +3,11 @@ import type { Server, ServerWebSocket, WebSocketHandler } from "bun"
 import { readBearerTokenFromHeader } from "../auth/session"
 import { error } from "../http/response"
 import type { RouteContext } from "../router-context"
-import type { SocketData } from "./hub"
+import type { RealtimeHub, SocketData } from "./hub"
+
+type WebSocketRouteContext = Omit<RouteContext, "realtimeHub"> & {
+  realtimeHub: RealtimeHub
+}
 
 function encode(payload: unknown): string {
   return JSON.stringify(payload)
@@ -37,7 +41,7 @@ function readTokenFromWebSocketRequest(request: Request): string | null {
 async function handleClientMessage(
   ws: ServerWebSocket<SocketData>,
   payload: string | Buffer | ArrayBuffer | Uint8Array,
-  ctx: RouteContext
+  ctx: WebSocketRouteContext
 ): Promise<void> {
   let parsed: RealtimeClientMessage
   try {
@@ -92,7 +96,7 @@ async function handleClientMessage(
 export async function tryUpgradeToWebSocket(
   request: Request,
   server: Server<SocketData>,
-  ctx: RouteContext
+  ctx: WebSocketRouteContext
 ): Promise<Response | undefined> {
   const token = readTokenFromWebSocketRequest(request)
   if (!token) {
@@ -118,7 +122,7 @@ export async function tryUpgradeToWebSocket(
   return undefined
 }
 
-export function createWebSocketHandlers(ctx: RouteContext): WebSocketHandler<SocketData> {
+export function createWebSocketHandlers(ctx: WebSocketRouteContext): WebSocketHandler<SocketData> {
   return {
     open(ws) {
       ctx.realtimeHub.registerSocket(ws)

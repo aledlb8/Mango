@@ -7,9 +7,10 @@ import type {
   VoiceSession
 } from "./api"
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001"
+const REALTIME_BASE = process.env.NEXT_PUBLIC_REALTIME_GATEWAY_URL ?? "http://localhost:4001"
 const WS_BASE =
-  process.env.NEXT_PUBLIC_WS_BASE_URL ?? API_BASE.replace(/^http:\/\//, "ws://").replace(/^https:\/\//, "wss://")
+  process.env.NEXT_PUBLIC_WS_BASE_URL ??
+  REALTIME_BASE.replace(/^http:\/\//, "ws://").replace(/^https:\/\//, "wss://")
 
 export type RealtimeStatus = "disconnected" | "connecting" | "connected"
 

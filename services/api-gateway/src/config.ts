@@ -16,5 +16,8 @@ export const presenceServiceUrl = process.env.PRESENCE_SERVICE_URL ?? "http://lo
 export const preferPresenceServiceProxy = process.env.PREFER_PRESENCE_SERVICE_PROXY !== "false"
 export const voiceSignalingServiceUrl = process.env.VOICE_SIGNALING_SERVICE_URL ?? "http://localhost:4003"
 export const preferVoiceSignalingProxy = process.env.PREFER_VOICE_SIGNALING_PROXY !== "false"
+export const realtimeGatewayUrl = process.env.REALTIME_GATEWAY_URL ?? "http://localhost:4001"
+export const preferRealtimeGatewayFanout = process.env.PREFER_REALTIME_GATEWAY_FANOUT !== "false"
+export const realtimeGatewayInternalApiKey = process.env.REALTIME_GATEWAY_INTERNAL_API_KEY ?? ""
 export const enableScreenShare = process.env.ENABLE_SCREEN_SHARE === "true"
 export const adminApiKey = process.env.ADMIN_API_KEY ?? ""
