@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.9"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Bootstrap
+        run: bun run bootstrap
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Unit and Integration Tests
+        run: bun run test
+
+      - name: Contract Tests
+        run: bun run test:contract
+
+      - name: E2E Tests
+        run: bun run test:e2e
